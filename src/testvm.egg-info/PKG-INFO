@@ -1,3 +1,12 @@
+Metadata-Version: 2.4
+Name: testvm
+Version: 0.1.0
+Summary: QEMU wrapper and initrd tooling for quick kernel testing
+Requires-Python: >=3.13
+Description-Content-Type: text/markdown
+Requires-Dist: platformdirs>=4.3.8
+Requires-Dist: typer>=0.24.1
+
 # testvm
 
 `testvm` is a small Python library and CLI for common kernel/QEMU workflows:
@@ -13,13 +22,14 @@ The CLI is a thin wrapper over the public library API, so the same features can 
 
 Runtime dependencies:
 
-- `docker` with access to the Docker daemon
 - `git`
+- `make`
+- `gcc`
 - `cpio`
 - `gzip`
 - `qemu-system-x86_64` and/or `qemu-system-aarch64`
 
-Python dependencies are managed through `uv` or standard packaging tools. BusyBox itself is built inside the provided Docker image rather than on the host toolchain.
+Python dependencies are managed through `uv` or standard packaging tools.
 
 ## Data Directory
 
@@ -31,7 +41,6 @@ If it is unset:
 - on other platforms, it falls back to the platform-specific user data directory from `platformdirs`
 
 BusyBox source/build state and cached default initrds live there by default.
-The BusyBox source tree is cloned on the host into that work area and then bind-mounted into the Docker build container.
 
 ## CLI
 
@@ -43,17 +52,6 @@ testvm run ./vmlinux --gdb-port 1234 --append panic=-1
 ```
 
 `testvm run` auto-detects the kernel architecture from the ELF header when `--arch` is omitted. If `--initrd` is omitted, it reuses or builds a cached BusyBox initrd for the host architecture.
-
-## Docker Builder
-
-The repo includes a `Dockerfile` based on `ubuntu:24.04`. It installs the BusyBox build dependencies with:
-
-```bash
-apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libncurses-dev pkg-config
-```
-
-`testvm initrd build-default` builds BusyBox by calling the Docker CLI, bind-mounting the BusyBox source, build directory, and rootfs install directory into the container.
 
 ## Library API
 

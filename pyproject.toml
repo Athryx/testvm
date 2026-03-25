@@ -1,0 +1,16 @@
+[project]
+name = "testvm"
+version = "0.1.0"
+description = "QEMU wrapper and initrd tooling for quick kernel testing"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "platformdirs>=4.3.8",
+    "typer>=0.24.1",
+]
+
+[tool.uv]
+package = true
+
+[project.scripts]
+testvm = "testvm.cli:main"
