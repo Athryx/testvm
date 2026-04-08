@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Iterable
 
-from ._arch import Architecture, detect_kernel_arch, get_host_arch, normalize_arch
+from ._arch import Architecture, detect_kernel_arch, normalize_arch
 from ._busybox import build_default_initrd
 from ._errors import CommandExecutionError, TestvmError
 
@@ -37,6 +37,26 @@ def _build_qemu_command(
             str(kernel),
         ]
         cmdline = ["console=ttyS0", "rdinit=/init"]
+    elif arch is Architecture.ARM:
+        command = [
+            "qemu-system-arm",
+            "-machine",
+            "virt",
+            "-cpu",
+            "cortex-a15",
+            "-m",
+            memory,
+            "-smp",
+            str(smp),
+            "-nographic",
+            "-monitor",
+            "none",
+            "-serial",
+            "stdio",
+            "-kernel",
+            str(kernel),
+        ]
+        cmdline = ["console=ttyAMA0", "rdinit=/init"]
     elif arch is Architecture.AARCH64:
         command = [
             "qemu-system-aarch64",
@@ -88,7 +108,9 @@ def run_vm(
     if not kernel_path.is_file():
         raise TestvmError(f"Kernel does not exist: {kernel_path}")
 
-    normalized_arch = detect_kernel_arch(kernel_path) if arch is None else normalize_arch(arch)
+    normalized_arch = (
+        detect_kernel_arch(kernel_path) if arch is None else normalize_arch(arch)
+    )
 
     initrd_path: Path | None
     if initrd is not None:
@@ -96,12 +118,6 @@ def run_vm(
         if not initrd_path.is_file():
             raise TestvmError(f"Initrd does not exist: {initrd_path}")
     else:
-        host_arch = get_host_arch()
-        if normalized_arch != host_arch:
-            raise TestvmError(
-                "Automatic default initrd builds only support the host architecture "
-                f"({host_arch}); provide --initrd for {normalized_arch}"
-            )
         initrd_path = build_default_initrd(
             arch=normalized_arch,
             workdir=workdir,

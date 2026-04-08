@@ -76,7 +76,10 @@ def build_default_command(
 
 @app.command("run")
 def run_command(
-    vmlinux: Annotated[Path, typer.Argument(help="Kernel ELF image to boot.")],
+    vmlinux: Annotated[
+        Path,
+        typer.Argument(help="Kernel image to boot. Non-ELF images require --arch."),
+    ],
     arch: Annotated[Architecture | None, typer.Option(help="Override detected architecture.")] = None,
     initrd: Annotated[Path | None, typer.Option(help="Initrd path to boot with.")] = None,
     workdir: Annotated[Path | None, typer.Option(help="BusyBox work directory.")] = None,

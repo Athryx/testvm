@@ -10,18 +10,24 @@ from ._errors import TestvmError, UnsupportedArchitectureError
 
 class Architecture(StrEnum):
     X86_64 = "x86_64"
+    ARM = "arm"
     AARCH64 = "aarch64"
 
 
 _HOST_ARCHES = {
     "x86_64": Architecture.X86_64,
     "amd64": Architecture.X86_64,
+    "arm": Architecture.ARM,
+    "armv7": Architecture.ARM,
+    "armv7l": Architecture.ARM,
+    "armhf": Architecture.ARM,
     "aarch64": Architecture.AARCH64,
     "arm64": Architecture.AARCH64,
 }
 
 _ELF_MACHINE_ARCHES = {
     62: Architecture.X86_64,
+    40: Architecture.ARM,
     183: Architecture.AARCH64,
 }
 

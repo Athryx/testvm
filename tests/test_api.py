@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from testvm import CommandExecutionError, DATA_DIR_ENV_VAR, TestvmError
-from testvm._arch import detect_kernel_arch
+from testvm._arch import Architecture, detect_kernel_arch, normalize_arch
 from testvm._busybox import (
     DEFAULT_BUSYBOX_REF,
     DOCKER_BUILD_DIR,
@@ -95,11 +95,22 @@ class InitrdTests(unittest.TestCase):
 
 
 class DetectArchTests(unittest.TestCase):
+    def test_normalize_arm_aliases(self) -> None:
+        self.assertEqual(normalize_arch("arm"), Architecture.ARM)
+        self.assertEqual(normalize_arch("armv7"), Architecture.ARM)
+        self.assertEqual(normalize_arch("armhf"), Architecture.ARM)
+
     def test_detect_x86_64(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "vmlinux"
             _make_elf(path, 62)
             self.assertEqual(detect_kernel_arch(path), "x86_64")
+
+    def test_detect_arm(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "zImage.elf"
+            _make_elf(path, 40)
+            self.assertEqual(detect_kernel_arch(path), "arm")
 
     def test_detect_aarch64(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -125,16 +136,10 @@ class BusyBoxBuildTests(unittest.TestCase):
             output = temp_path / "out" / "initrd.cpio.gz"
 
             with mock.patch("testvm._busybox.get_data_dir", return_value=temp_path / "cache"):
-                with mock.patch("testvm._busybox.get_host_arch", return_value="x86_64"):
-                    path = build_default_initrd(arch="x86_64", output_path=output)
+                path = build_default_initrd(arch="x86_64", output_path=output)
 
             self.assertEqual(path, output)
             self.assertEqual(output.read_bytes(), b"cached")
-
-    def test_build_default_initrd_refuses_non_host_arch(self) -> None:
-        with mock.patch("testvm._busybox.get_host_arch", return_value="x86_64"):
-            with self.assertRaises(TestvmError):
-                build_default_initrd(arch="aarch64")
 
     def test_build_default_initrd_uses_docker_build_and_run(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -155,15 +160,14 @@ class BusyBoxBuildTests(unittest.TestCase):
                 return output
 
             with mock.patch("testvm._busybox.get_data_dir", return_value=data_dir):
-                with mock.patch("testvm._busybox.get_host_arch", return_value="x86_64"):
-                    with mock.patch("testvm._busybox._ensure_busybox_source") as source_mock:
-                        with mock.patch("testvm._busybox._run_docker_checked", side_effect=fake_docker):
-                            with mock.patch("testvm._busybox.pack_initrd", side_effect=fake_pack):
-                                path = build_default_initrd(
-                                    arch="x86_64",
-                                    workdir=workdir,
-                                    busybox_ref=DEFAULT_BUSYBOX_REF,
-                                )
+                with mock.patch("testvm._busybox._ensure_busybox_source") as source_mock:
+                    with mock.patch("testvm._busybox._run_docker_checked", side_effect=fake_docker):
+                        with mock.patch("testvm._busybox.pack_initrd", side_effect=fake_pack):
+                            path = build_default_initrd(
+                                arch="x86_64",
+                                workdir=workdir,
+                                busybox_ref=DEFAULT_BUSYBOX_REF,
+                            )
             source_mock.assert_called_once()
             self.assertEqual(path.read_bytes(), b"initrd")
             self.assertEqual(len(commands), 2)
@@ -183,6 +187,80 @@ class BusyBoxBuildTests(unittest.TestCase):
             self.assertIn(f"src={source_dir}", source_mount)
             self.assertIn(f"src={workdir / 'busybox-build' / 'x86_64' / DEFAULT_BUSYBOX_REF}", build_mount)
             self.assertIn(f"src={workdir / 'busybox-rootfs' / 'x86_64' / DEFAULT_BUSYBOX_REF}", rootfs_mount)
+
+    def test_build_default_initrd_uses_arm_cross_compile_vars(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            data_dir = temp_path / "data"
+            workdir = temp_path / "work"
+            source_dir = workdir / "busybox-src" / DEFAULT_BUSYBOX_REF
+            source_dir.mkdir(parents=True)
+            commands: list[list[str]] = []
+
+            def fake_docker(command: list[str]) -> None:
+                commands.append(command)
+
+            def fake_pack(rootfs_dir: str | Path, output_path: str | Path, *, compress: bool = True) -> Path:
+                output = Path(output_path)
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(b"arm-initrd")
+                return output
+
+            with mock.patch("testvm._busybox.get_data_dir", return_value=data_dir):
+                with mock.patch("testvm._busybox._ensure_busybox_source"):
+                    with mock.patch("testvm._busybox._run_docker_checked", side_effect=fake_docker):
+                        with mock.patch("testvm._busybox.pack_initrd", side_effect=fake_pack):
+                            path = build_default_initrd(
+                                arch="arm",
+                                workdir=workdir,
+                                busybox_ref=DEFAULT_BUSYBOX_REF,
+                            )
+
+            self.assertEqual(path.read_bytes(), b"arm-initrd")
+            _, run_cmd = commands
+            self.assertIn("ARCH=arm", run_cmd[-1])
+            self.assertIn("CROSS_COMPILE=arm-linux-gnueabihf-", run_cmd[-1])
+            self.assertIn("CONFIG_SHA1_HWACCEL", run_cmd[-1])
+            self.assertIn("CONFIG_SHA256_HWACCEL", run_cmd[-1])
+            self.assertIn(
+                f"src={workdir / 'busybox-build' / 'arm' / DEFAULT_BUSYBOX_REF}",
+                next(item for item in run_cmd if f"dst={DOCKER_BUILD_DIR}" in item),
+            )
+
+    def test_build_default_initrd_uses_aarch64_cross_compile_vars(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            data_dir = temp_path / "data"
+            workdir = temp_path / "work"
+            source_dir = workdir / "busybox-src" / DEFAULT_BUSYBOX_REF
+            source_dir.mkdir(parents=True)
+            commands: list[list[str]] = []
+
+            def fake_docker(command: list[str]) -> None:
+                commands.append(command)
+
+            def fake_pack(rootfs_dir: str | Path, output_path: str | Path, *, compress: bool = True) -> Path:
+                output = Path(output_path)
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(b"aarch64-initrd")
+                return output
+
+            with mock.patch("testvm._busybox.get_data_dir", return_value=data_dir):
+                with mock.patch("testvm._busybox._ensure_busybox_source"):
+                    with mock.patch("testvm._busybox._run_docker_checked", side_effect=fake_docker):
+                        with mock.patch("testvm._busybox.pack_initrd", side_effect=fake_pack):
+                            path = build_default_initrd(
+                                arch="aarch64",
+                                workdir=workdir,
+                                busybox_ref=DEFAULT_BUSYBOX_REF,
+                            )
+
+            self.assertEqual(path.read_bytes(), b"aarch64-initrd")
+            _, run_cmd = commands
+            self.assertIn("ARCH=arm64", run_cmd[-1])
+            self.assertIn("CROSS_COMPILE=aarch64-linux-gnu-", run_cmd[-1])
+            self.assertIn("CONFIG_SHA1_HWACCEL", run_cmd[-1])
+            self.assertIn("CONFIG_SHA256_HWACCEL", run_cmd[-1])
 
     def test_run_docker_checked_rewords_permission_error(self) -> None:
         with mock.patch(
@@ -213,7 +291,23 @@ class RunVmTests(unittest.TestCase):
         self.assertEqual(command[-1], "-no-reboot")
         self.assertIn("console=ttyS0 rdinit=/init panic=-1", command)
 
-    def test_run_vm_autobuilds_initrd_on_host_arch(self) -> None:
+    def test_build_qemu_command_for_arm(self) -> None:
+        command = _build_qemu_command(
+            kernel=Path("/tmp/zImage"),
+            arch="arm",
+            initrd=Path("/tmp/initrd.cpio.gz"),
+            gdb_port=None,
+            memory="256M",
+            smp=1,
+            append=["panic=-1"],
+            qemu_arg=[],
+        )
+        self.assertIn("qemu-system-arm", command[0])
+        self.assertIn("virt", command)
+        self.assertIn("cortex-a15", command)
+        self.assertIn("console=ttyAMA0 rdinit=/init panic=-1", command)
+
+    def test_run_vm_autobuilds_initrd_for_detected_arch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             kernel = temp_path / "vmlinux"
@@ -230,10 +324,42 @@ class RunVmTests(unittest.TestCase):
             build_mock.assert_called_once()
             run_mock.assert_called_once()
 
-    def test_run_vm_requires_initrd_for_non_host_arch(self) -> None:
+    def test_run_vm_autobuilds_initrd_for_arm_on_x86_host(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             kernel = Path(temp_dir) / "Image"
-            _make_elf(kernel, 183)
-            with mock.patch("testvm._qemu.get_host_arch", return_value="x86_64"):
-                with self.assertRaises(TestvmError):
-                    run_vm(kernel=kernel)
+            initrd = Path(temp_dir) / "initrd.cpio.gz"
+            _make_elf(kernel, 40)
+            initrd.write_bytes(b"initrd")
+
+            with mock.patch("testvm._qemu.build_default_initrd", return_value=initrd) as build_mock:
+                with mock.patch("testvm._qemu.subprocess.run") as run_mock:
+                    run_mock.return_value.returncode = 0
+                    exit_code = run_vm(kernel=kernel)
+
+            self.assertEqual(exit_code, 0)
+            build_mock.assert_called_once_with(
+                arch=Architecture.ARM,
+                workdir=None,
+                force_rebuild=False,
+            )
+            run_mock.assert_called_once()
+
+    def test_run_vm_accepts_raw_arm_kernel_when_arch_is_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kernel = Path(temp_dir) / "zImage"
+            initrd = Path(temp_dir) / "initrd.cpio.gz"
+            kernel.write_bytes(b"not-elf")
+            initrd.write_bytes(b"initrd")
+
+            with mock.patch("testvm._qemu.build_default_initrd", return_value=initrd) as build_mock:
+                with mock.patch("testvm._qemu.subprocess.run") as run_mock:
+                    run_mock.return_value.returncode = 0
+                    exit_code = run_vm(kernel=kernel, arch="arm")
+
+            self.assertEqual(exit_code, 0)
+            build_mock.assert_called_once_with(
+                arch=Architecture.ARM,
+                workdir=None,
+                force_rebuild=False,
+            )
+            run_mock.assert_called_once()

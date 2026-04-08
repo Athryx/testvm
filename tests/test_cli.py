@@ -51,3 +51,14 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(result.exit_code, 7)
             run_mock.assert_called_once()
+
+    def test_run_command_accepts_arm_arch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kernel = Path(temp_dir) / "zImage"
+            kernel.write_bytes(b"raw")
+
+            with mock.patch("testvm.cli.run_vm", return_value=0) as run_mock:
+                result = runner.invoke(app, ["run", str(kernel), "--arch", "arm"])
+
+            self.assertEqual(result.exit_code, 0)
+            run_mock.assert_called_once()

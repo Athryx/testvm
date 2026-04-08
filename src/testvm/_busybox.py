@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ._arch import Architecture, get_host_arch, normalize_arch
+from ._arch import Architecture, normalize_arch
 from ._errors import CommandExecutionError, TestvmError
 from ._initrd import pack_initrd
 from ._paths import get_data_dir
@@ -16,6 +16,11 @@ DOCKER_IMAGE_TAG = "testvm-busybox-builder:ubuntu24.04"
 DOCKER_SOURCE_DIR = Path("/workspace/source")
 DOCKER_BUILD_DIR = Path("/workspace/build")
 DOCKER_ROOTFS_DIR = Path("/workspace/rootfs")
+_BUSYBOX_MAKE_VARS = {
+    Architecture.X86_64: [],
+    Architecture.ARM: ["ARCH=arm", "CROSS_COMPILE=arm-linux-gnueabihf-"],
+    Architecture.AARCH64: ["ARCH=arm64", "CROSS_COMPILE=aarch64-linux-gnu-"],
+}
 
 
 def _run_checked(command: list[str], *, cwd: Path | None = None) -> None:
@@ -81,12 +86,32 @@ def _ensure_docker_builder_image() -> None:
 
 
 def _build_busybox_in_docker(
-    *, source_dir: Path, build_dir: Path, rootfs_dir: Path
+    *,
+    arch: Architecture,
+    source_dir: Path,
+    build_dir: Path,
+    rootfs_dir: Path,
 ) -> None:
+    make_vars = " ".join(_BUSYBOX_MAKE_VARS[arch])
+    make_prefix = f"make -C {DOCKER_SOURCE_DIR} O={DOCKER_BUILD_DIR}"
+    if make_vars:
+        make_prefix = f"{make_prefix} {make_vars}"
+    extra_config_steps: list[str] = []
+    if arch is not Architecture.X86_64:
+        extra_config_steps.extend(
+            [
+                f"if grep -q '^CONFIG_SHA1_HWACCEL=y$' {DOCKER_BUILD_DIR}/.config; then",
+                f"    sed -i 's/^CONFIG_SHA1_HWACCEL=y$/# CONFIG_SHA1_HWACCEL is not set/' {DOCKER_BUILD_DIR}/.config",
+                "fi",
+                f"if grep -q '^CONFIG_SHA256_HWACCEL=y$' {DOCKER_BUILD_DIR}/.config; then",
+                f"    sed -i 's/^CONFIG_SHA256_HWACCEL=y$/# CONFIG_SHA256_HWACCEL is not set/' {DOCKER_BUILD_DIR}/.config",
+                "fi",
+            ]
+        )
     build_steps = "\n".join(
         [
             "set -eu",
-            f"make -C {DOCKER_SOURCE_DIR} O={DOCKER_BUILD_DIR} defconfig",
+            f"{make_prefix} defconfig",
             f"if grep -q '^# CONFIG_STATIC is not set$' {DOCKER_BUILD_DIR}/.config; then",
             f"    sed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' {DOCKER_BUILD_DIR}/.config",
             "elif ! grep -q '^CONFIG_STATIC=y$' "
@@ -96,10 +121,10 @@ def _build_busybox_in_docker(
             f"if grep -q '^CONFIG_TC=y$' {DOCKER_BUILD_DIR}/.config; then",
             f"    sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' {DOCKER_BUILD_DIR}/.config",
             "fi",
-            f"make -C {DOCKER_SOURCE_DIR} O={DOCKER_BUILD_DIR} silentoldconfig",
-            f"make -C {DOCKER_SOURCE_DIR} O={DOCKER_BUILD_DIR} -j{os.cpu_count() or 1}",
-            f"make -C {DOCKER_SOURCE_DIR} O={DOCKER_BUILD_DIR} "
-            f"CONFIG_PREFIX={DOCKER_ROOTFS_DIR} install",
+            *extra_config_steps,
+            f"{make_prefix} silentoldconfig",
+            f"{make_prefix} -j{os.cpu_count() or 1}",
+            f"{make_prefix} CONFIG_PREFIX={DOCKER_ROOTFS_DIR} install",
         ]
     )
 
@@ -170,12 +195,6 @@ def build_default_initrd(
     busybox_ref: str = DEFAULT_BUSYBOX_REF,
 ) -> Path:
     normalized_arch = normalize_arch(arch)
-    host_arch = get_host_arch()
-    if normalized_arch != host_arch:
-        raise TestvmError(
-            "Default BusyBox initrd builds are only supported for the host "
-            f"architecture ({host_arch}); provide --initrd for {normalized_arch}"
-        )
 
     data_dir = get_data_dir()
     cache_root = data_dir / "busybox" / normalized_arch / busybox_ref
@@ -214,6 +233,7 @@ def build_default_initrd(
 
     _ensure_docker_builder_image()
     _build_busybox_in_docker(
+        arch=normalized_arch,
         source_dir=source_dir,
         build_dir=build_dir,
         rootfs_dir=rootfs_dir,
