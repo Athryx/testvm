@@ -179,7 +179,55 @@ mkdir -p /dev /proc /sys /run /tmp /root
 [ -c /dev/console ] || mknod -m 600 /dev/console c 5 1
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+share_requested=0
+autorun_path=""
+
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        testvm_share=1)
+            share_requested=1
+            ;;
+        testvm_autorun=*)
+            autorun_path=${arg#testvm_autorun=}
+            ;;
+    esac
+done
+
+mount_testvm_share() {
+    mkdir -p /mnt/testvm-share
+    for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+        for device in /dev/vda /dev/vdb /dev/sda /dev/sdb /dev/xvda /dev/xvdb; do
+            if [ -b "$device" ] && mount -t ext4 "$device" /mnt/testvm-share 2>/dev/null; then
+                echo "testvm shared ext4 mounted from $device"
+                return 0
+            fi
+        done
+        sleep 1
+    done
+
+    echo "warning: testvm shared ext4 was requested but could not be mounted"
+    return 1
+}
+
+if [ "$share_requested" = "1" ]; then
+    mount_testvm_share || true
+fi
+
 echo "testvm busybox initrd ready"
+
+if [ -n "$autorun_path" ]; then
+    if [ ! -e "$autorun_path" ]; then
+        echo "warning: autorun path not found: $autorun_path"
+    else
+        set +e
+        "$autorun_path"
+        autorun_status=$?
+        set -e
+        echo "testvm autorun exited with status $autorun_status"
+    fi
+fi
+
 exec /bin/sh
 """
     init_path.write_text(script)

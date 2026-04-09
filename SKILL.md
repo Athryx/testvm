@@ -12,9 +12,11 @@ Use `testvm` directly for kernel/QEMU workflows. The CLI is a thin wrapper over 
 Before running commands that touch the host toolchain, assume these external tools are required:
 
 - `cpio`
+- `debugfs`
 - `gzip`
 - `git`
 - `docker` with daemon access
+- `mkfs.ext4`
 - `qemu-system-x86_64`, `qemu-system-arm`, and/or `qemu-system-aarch64`
 
 Runtime facts:
@@ -133,12 +135,54 @@ testvm initrd build-default --arch aarch64 --output ./initrd-aarch64.cpio.gz
 testvm initrd build-default --arch x86_64 --force-rebuild
 ```
 
+### `testvm ext4 pack`
+
+Syntax:
+
+```bash
+testvm ext4 pack SOURCE_DIR OUTPUT_IMAGE [--size SIZE]
+```
+
+Behavior:
+
+- Packs `SOURCE_DIR` into a raw ext4 disk image
+- Prints the output image path on success
+- Auto-sizes the image if `--size` is omitted
+- Fails if the source directory does not exist
+
+Example:
+
+```bash
+testvm ext4 pack ./shared ./shared.img
+```
+
+### `testvm ext4 unpack`
+
+Syntax:
+
+```bash
+testvm ext4 unpack INPUT_IMAGE OUTPUT_DIR
+```
+
+Behavior:
+
+- Extracts an ext4 disk image into `OUTPUT_DIR`
+- Prints the output directory on success
+- Creates `OUTPUT_DIR` if needed
+- Refuses to unpack into a non-empty directory
+
+Example:
+
+```bash
+testvm ext4 unpack ./shared.img ./shared-out
+```
+
 ### `testvm run`
 
 Syntax:
 
 ```bash
-testvm run KERNEL [--arch ARCH] [--initrd PATH] [--workdir PATH] [--gdb-port PORT] [--memory SIZE] [--smp N] [--append ARG]... [--qemu-arg ARG]... [--force-rebuild-initrd]
+testvm run KERNEL [--arch ARCH] [--initrd PATH] [--workdir PATH] [--gdb-port PORT] [--memory SIZE] [--smp N] [--append ARG]... [--qemu-arg ARG]... [--share-dir PATH] [--sync-share-back] [--autorun GUEST_PATH] [--run-host-path HOST_PATH] [--force-rebuild-initrd]
 ```
 
 Options:
@@ -152,6 +196,10 @@ Options:
 - `--smp`: guest vCPU count, default `1`
 - `--append`: additional kernel command line arguments; repeat this flag for multiple values
 - `--qemu-arg`: additional raw QEMU arguments; repeat this flag for multiple values
+- `--share-dir`: snapshots a host directory into an ext4 image and mounts it in the guest at `/mnt/testvm-share`
+- `--sync-share-back`: extracts the shared ext4 image back into the host directory after QEMU exits
+- `--autorun`: absolute guest path to execute after init completes
+- `--run-host-path`: convenience flag that infers a share from the host file's parent and autoruns it in the guest
 - `--force-rebuild-initrd`: forces a rebuild of the auto-generated initrd
 
 Behavior:
@@ -160,6 +208,9 @@ Behavior:
 - If `--arch` is omitted, auto-detects the architecture from the ELF header
 - Raw non-ELF kernels cannot be auto-detected; for example, `zImage` requires `--arch arm`
 - If `--initrd` is omitted, calls `testvm initrd build-default` logic internally
+- If `--share-dir` is used, `testvm` creates a temporary ext4 image and adds it to QEMU as a virtio block drive
+- If `--run-host-path` is used without `--share-dir`, the shared directory defaults to the file's parent directory
+- The default init script mounts the shared image at `/mnt/testvm-share` and drops to a shell after any autorun program exits
 - Returns QEMU's exit code directly
 
 Architecture-specific QEMU launch behavior:
@@ -181,6 +232,8 @@ testvm run ./vmlinux --gdb-port 1234 --append panic=-1
 testvm run ./vmlinux --memory 1G --smp 2 --qemu-arg -no-reboot
 testvm run ./zImage --arch arm
 testvm run ./Image --arch aarch64 --initrd ./initrd.cpio.gz
+testvm run ./vmlinux --share-dir ./shared --autorun /mnt/testvm-share/run.sh
+testvm run ./vmlinux --run-host-path ./shared/run.sh
 ```
 
 ## Agent Guidance
@@ -193,6 +246,8 @@ Use these defaults unless the user asks for something else:
 - Use `--gdb-port 1234` when the user wants to attach GDB before boot
 - Use repeated `--append` flags for separate kernel args
 - Use repeated `--qemu-arg` flags for raw QEMU passthrough arguments
+- Prefer `--run-host-path` for quick "run this script/binary inside the guest" requests
+- Add `--sync-share-back` only when the user explicitly wants guest-side changes copied back to the host folder
 
 Examples:
 
@@ -210,8 +265,9 @@ Common failure cases:
 - Unsupported architecture value
 - Kernel path does not exist
 - Initrd path does not exist
+- Ext4 image path does not exist
 - Trying to unpack into a non-empty directory
-- Missing host tools such as `docker`, `cpio`, `gzip`, or QEMU
+- Missing host tools such as `docker`, `cpio`, `gzip`, `mkfs.ext4`, `debugfs`, or QEMU
 - Docker daemon permission errors
 - Supplying a non-ELF kernel without `--arch`
 

@@ -16,7 +16,9 @@ Runtime dependencies:
 - `docker` with access to the Docker daemon
 - `git`
 - `cpio`
+- `debugfs`
 - `gzip`
+- `mkfs.ext4`
 - `qemu-system-x86_64`, `qemu-system-arm`, and/or `qemu-system-aarch64`
 
 Python dependencies are managed through `uv` or standard packaging tools. BusyBox itself is built inside the provided Docker image rather than on the host toolchain, and ARM-family initrds are cross-built there on non-ARM hosts.
@@ -38,13 +40,18 @@ The BusyBox source tree is cloned on the host into that work area and then bind-
 ```bash
 testvm initrd pack ./rootfs ./rootfs.cpio.gz
 testvm initrd unpack ./rootfs.cpio.gz ./rootfs-unpacked
+testvm ext4 pack ./shared ./shared.img
+testvm ext4 unpack ./shared.img ./shared-out
 testvm initrd build-default --arch x86_64
 testvm run ./vmlinux --gdb-port 1234 --append panic=-1
 testvm initrd build-default --arch arm
 testvm run ./zImage --arch arm
+testvm run ./vmlinux --share-dir ./shared --autorun /mnt/testvm-share/run.sh
+testvm run ./vmlinux --run-host-path ./shared/run.sh
 ```
 
 `testvm run` auto-detects the kernel architecture from the ELF header when `--arch` is omitted. Raw ARM kernel images such as `zImage` require `--arch arm`. If `--initrd` is omitted, `testvm` reuses or builds a cached BusyBox initrd for the selected architecture.
+When `--share-dir` is provided, `testvm` snapshots that host directory into an ext4 image, adds it to QEMU as a virtio block drive, and the default init script mounts it at `/mnt/testvm-share`. `--run-host-path` is the convenience path for automatically running a host-side script or binary from that mounted directory after init completes.
 
 ## Docker Builder
 
@@ -61,10 +68,25 @@ apt-get update && apt-get install -y --no-install-recommends \
 ## Library API
 
 ```python
-from testvm import build_default_initrd, pack_initrd, run_vm, unpack_initrd
+from testvm import (
+    build_default_initrd,
+    pack_ext4_image,
+    pack_initrd,
+    run_vm,
+    unpack_ext4_image,
+    unpack_initrd,
+)
 
 initrd = build_default_initrd(arch="arm")
 pack_initrd("rootfs", "rootfs.cpio.gz")
 unpack_initrd("rootfs.cpio.gz", "rootfs-out")
-run_vm(kernel="zImage", arch="arm", initrd=initrd, gdb_port=1234)
+pack_ext4_image("shared", "shared.img")
+unpack_ext4_image("shared.img", "shared-out")
+run_vm(
+    kernel="zImage",
+    arch="arm",
+    initrd=initrd,
+    gdb_port=1234,
+    run_host_path="shared/run.sh",
+)
 ```

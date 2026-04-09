@@ -27,10 +27,43 @@ class CliTests(unittest.TestCase):
             pack_mock.assert_called_once_with(rootfs, output)
             self.assertIn(str(output), result.stdout)
 
+    def test_pack_ext4_command_calls_library_api(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_dir = temp_path / "shared"
+            source_dir.mkdir()
+            output = temp_path / "shared.img"
+
+            with mock.patch("testvm.cli.pack_ext4_image", return_value=output) as pack_mock:
+                result = runner.invoke(
+                    app,
+                    ["ext4", "pack", str(source_dir), str(output), "--size", "128M"],
+                )
+
+            self.assertEqual(result.exit_code, 0)
+            pack_mock.assert_called_once_with(source_dir, output, size="128M")
+            self.assertIn(str(output), result.stdout)
+
+    def test_unpack_ext4_command_calls_library_api(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            image = temp_path / "shared.img"
+            image.write_bytes(b"unused")
+            output = temp_path / "shared-out"
+
+            with mock.patch("testvm.cli.unpack_ext4_image", return_value=output) as unpack_mock:
+                result = runner.invoke(app, ["ext4", "unpack", str(image), str(output)])
+
+            self.assertEqual(result.exit_code, 0)
+            unpack_mock.assert_called_once_with(image, output)
+            self.assertIn(str(output), result.stdout)
+
     def test_run_command_calls_library_api(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             kernel = Path(temp_dir) / "vmlinux"
             kernel.write_bytes(b"not-used")
+            shared = Path(temp_dir) / "shared"
+            shared.mkdir()
 
             with mock.patch("testvm.cli.run_vm", return_value=7) as run_mock:
                 result = runner.invoke(
@@ -46,6 +79,11 @@ class CliTests(unittest.TestCase):
                         "panic=-1",
                         "--qemu-arg",
                         "-no-reboot",
+                        "--share-dir",
+                        str(shared),
+                        "--autorun",
+                        "/mnt/testvm-share/run.sh",
+                        "--sync-share-back",
                     ],
                 )
 

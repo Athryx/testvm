@@ -9,15 +9,19 @@ from . import (
     Architecture,
     DEFAULT_BUSYBOX_REF,
     build_default_initrd,
+    pack_ext4_image,
     pack_initrd,
     run_vm,
+    unpack_ext4_image,
     unpack_initrd,
 )
 from ._errors import TestvmError
 
 app = typer.Typer(no_args_is_help=True)
 initrd_app = typer.Typer(no_args_is_help=True)
+ext4_app = typer.Typer(no_args_is_help=True)
 app.add_typer(initrd_app, name="initrd")
+app.add_typer(ext4_app, name="ext4")
 
 
 def _exit_for_error(exc: TestvmError) -> None:
@@ -44,6 +48,34 @@ def unpack_command(
 ) -> None:
     try:
         path = unpack_initrd(initrd, output_dir)
+    except TestvmError as exc:
+        _exit_for_error(exc)
+    typer.echo(path)
+
+
+@ext4_app.command("pack")
+def pack_ext4_command(
+    source_dir: Annotated[Path, typer.Argument(help="Source directory to convert into ext4.")],
+    output_image: Annotated[Path, typer.Argument(help="Output ext4 image path.")],
+    size: Annotated[
+        str | None,
+        typer.Option(help="Image size in bytes or with K/M/G suffixes."),
+    ] = None,
+) -> None:
+    try:
+        path = pack_ext4_image(source_dir, output_image, size=size)
+    except TestvmError as exc:
+        _exit_for_error(exc)
+    typer.echo(path)
+
+
+@ext4_app.command("unpack")
+def unpack_ext4_command(
+    image_path: Annotated[Path, typer.Argument(help="Input ext4 image path.")],
+    output_dir: Annotated[Path, typer.Argument(help="Destination directory.")],
+) -> None:
+    try:
+        path = unpack_ext4_image(image_path, output_dir)
     except TestvmError as exc:
         _exit_for_error(exc)
     typer.echo(path)
@@ -94,6 +126,27 @@ def run_command(
         list[str] | None,
         typer.Option(help="Additional raw QEMU arguments. Repeatable."),
     ] = None,
+    share_dir: Annotated[
+        Path | None,
+        typer.Option(help="Host directory to snapshot into a mounted guest ext4 volume."),
+    ] = None,
+    sync_share_back: Annotated[
+        bool,
+        typer.Option(
+            "--sync-share-back",
+            help="Extract the shared ext4 image back into the host directory after QEMU exits.",
+        ),
+    ] = False,
+    autorun: Annotated[
+        str | None,
+        typer.Option(help="Absolute guest path to execute after init completes."),
+    ] = None,
+    run_host_path: Annotated[
+        Path | None,
+        typer.Option(
+            help="Host file inside the shared directory to execute automatically in the guest.",
+        ),
+    ] = None,
     force_rebuild_initrd: Annotated[
         bool, typer.Option("--force-rebuild-initrd", help="Rebuild the auto-generated initrd.")
     ] = False,
@@ -109,6 +162,10 @@ def run_command(
             append=append or (),
             qemu_arg=qemu_arg or (),
             workdir=workdir,
+            share_dir=share_dir,
+            sync_share_back=sync_share_back,
+            autorun=autorun,
+            run_host_path=run_host_path,
             force_rebuild_initrd=force_rebuild_initrd,
         )
     except TestvmError as exc:
