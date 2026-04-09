@@ -8,11 +8,42 @@ from pathlib import Path
 from ._errors import CommandExecutionError, TestvmError
 
 _GZIP_MAGIC = b"\x1f\x8b"
+_LZ4_MAGIC = b"\x04\x22\x4d\x18"
+_LZ4_LEGACY_MAGIC = b"\x02\x21\x4c\x18"
 _ORIGINAL_INIT_RELATIVE_PATH = Path(".testvm") / "original-init"
 
 
 def _check_existing_output(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _wait_for_extract_pipeline(
+    *,
+    decompress_proc: subprocess.Popen[bytes],
+    cpio_proc: subprocess.Popen[bytes],
+    decompressor_name: str,
+) -> None:
+    assert decompress_proc.stdout is not None
+    decompress_proc.stdout.close()
+    try:
+        cpio_stderr = b"" if cpio_proc.stderr is None else cpio_proc.stderr.read()
+        decompress_stderr = (
+            b"" if decompress_proc.stderr is None else decompress_proc.stderr.read()
+        )
+        cpio_code = cpio_proc.wait()
+        decompress_code = decompress_proc.wait()
+    finally:
+        if cpio_proc.stderr is not None:
+            cpio_proc.stderr.close()
+        if decompress_proc.stderr is not None:
+            decompress_proc.stderr.close()
+
+    if decompress_code != 0:
+        raise CommandExecutionError(
+            decompress_stderr.decode().strip() or f"{decompressor_name} failed"
+        )
+    if cpio_code != 0:
+        raise CommandExecutionError(cpio_stderr.decode().strip() or "cpio failed")
 
 
 def _remove_existing(path: Path) -> None:
@@ -279,7 +310,7 @@ def unpack_initrd(initrd_path: str | Path, output_dir: str | Path) -> Path:
         raise TestvmError(f"Output directory must be empty: {destination}")
 
     with source.open("rb") as handle:
-        header = handle.read(2)
+        header = handle.read(4)
 
     extract_cmd = [
         "cpio",
@@ -289,34 +320,46 @@ def unpack_initrd(initrd_path: str | Path, output_dir: str | Path) -> Path:
         "--no-absolute-filenames",
     ]
 
-    if header == _GZIP_MAGIC:
-        gzip_proc = subprocess.Popen(
-            ["gzip", "-dc", str(source)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+    if header.startswith(_GZIP_MAGIC):
+        try:
+            gzip_proc = subprocess.Popen(
+                ["gzip", "-dc", str(source)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise CommandExecutionError("Command not found: gzip") from exc
         cpio_proc = subprocess.Popen(
             extract_cmd,
             cwd=destination,
             stdin=gzip_proc.stdout,
             stderr=subprocess.PIPE,
         )
-        assert gzip_proc.stdout is not None
-        gzip_proc.stdout.close()
+        _wait_for_extract_pipeline(
+            decompress_proc=gzip_proc,
+            cpio_proc=cpio_proc,
+            decompressor_name="gzip",
+        )
+    elif header in (_LZ4_MAGIC, _LZ4_LEGACY_MAGIC):
         try:
-            cpio_stderr = b"" if cpio_proc.stderr is None else cpio_proc.stderr.read()
-            gzip_stderr = b"" if gzip_proc.stderr is None else gzip_proc.stderr.read()
-            cpio_code = cpio_proc.wait()
-            gzip_code = gzip_proc.wait()
-        finally:
-            if cpio_proc.stderr is not None:
-                cpio_proc.stderr.close()
-            if gzip_proc.stderr is not None:
-                gzip_proc.stderr.close()
-        if gzip_code != 0:
-            raise CommandExecutionError(gzip_stderr.decode().strip() or "gzip failed")
-        if cpio_code != 0:
-            raise CommandExecutionError(cpio_stderr.decode().strip() or "cpio failed")
+            lz4_proc = subprocess.Popen(
+                ["lz4", "-dc", str(source)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise CommandExecutionError("Command not found: lz4") from exc
+        cpio_proc = subprocess.Popen(
+            extract_cmd,
+            cwd=destination,
+            stdin=lz4_proc.stdout,
+            stderr=subprocess.PIPE,
+        )
+        _wait_for_extract_pipeline(
+            decompress_proc=lz4_proc,
+            cpio_proc=cpio_proc,
+            decompressor_name="lz4",
+        )
     else:
         with source.open("rb") as handle:
             result = subprocess.run(

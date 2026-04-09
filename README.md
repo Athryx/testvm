@@ -19,6 +19,7 @@ Runtime dependencies:
 - `cpio`
 - `debugfs`
 - `gzip`
+- `lz4`
 - `mkfs.ext4`
 - `qemu-system-x86_64`, `qemu-system-arm`, and/or `qemu-system-aarch64`
 
@@ -54,7 +55,8 @@ testvm run ./vmlinux --run-host-path ./shared/run.sh
 ```
 
 `testvm run` auto-detects the kernel architecture from the ELF header when `--arch` is omitted. Raw ARM kernel images such as `zImage` require `--arch arm`. If `--initrd` is omitted, `testvm` reuses or builds a cached BusyBox initrd for the selected architecture.
-When `--module-initrd` is provided, `testvm` merges that packed initrd or unpacked rootfs onto the base initrd before boot and installs a small `/init` wrapper that reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before handing control to the original init.
+`testvm initrd unpack` accepts gzip-compressed, lz4-compressed, or plain `cpio` initrds.
+When `--module-initrd` is provided, `testvm` merges that packed initrd or unpacked rootfs onto the base initrd before boot and installs a small `/init` wrapper that reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before handing control to the original init. Packed base or overlay initrds may be gzip, lz4, or plain `cpio`.
 When `--share-dir` is provided, `testvm` snapshots that host directory into an ext4 image, adds it to QEMU as a virtio block drive, and the default init script mounts it at `/mnt/testvm-share`. `--run-host-path` is the convenience path for automatically running a host-side script or binary from that mounted directory after init completes.
 
 ## Docker Builder

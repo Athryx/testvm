@@ -101,6 +101,43 @@ class InitrdTests(unittest.TestCase):
             with self.assertRaises(TestvmError):
                 unpack_initrd(initrd, output_dir)
 
+    def test_unpack_supports_lz4_initrd(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            rootfs = temp_path / "rootfs"
+            rootfs.mkdir()
+            script = rootfs / "hello.sh"
+            script.write_text("#!/bin/sh\necho hi\n")
+            script.chmod(0o755)
+
+            plain_initrd = temp_path / "rootfs.cpio"
+            lz4_initrd = temp_path / "rootfs.cpio.lz4"
+            unpacked = temp_path / "unpacked"
+
+            pack_initrd(rootfs, plain_initrd, compress=False)
+            subprocess.run(
+                ["lz4", "-z", "-f", str(plain_initrd), str(lz4_initrd)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            unpack_initrd(lz4_initrd, unpacked)
+
+            self.assertEqual((unpacked / "hello.sh").read_text(), "#!/bin/sh\necho hi\n")
+            mode = stat.S_IMODE((unpacked / "hello.sh").stat().st_mode)
+            self.assertEqual(mode, 0o755)
+
+    def test_unpack_supports_legacy_lz4_initrd(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            unpacked = temp_path / "unpacked"
+
+            unpack_initrd(Path("samples/initramfs.img"), unpacked)
+
+            self.assertTrue((unpacked / "lib" / "modules").exists())
+            self.assertTrue((unpacked / "lib" / "modules").is_dir())
+
     def test_build_merged_initrd_accepts_overlay_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -185,6 +222,61 @@ class InitrdTests(unittest.TestCase):
                 "virtio_blk\n",
             )
             self.assertTrue((merged_rootfs / ".testvm" / "original-init").exists())
+
+    def test_build_merged_initrd_accepts_lz4_base_and_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            base_rootfs = temp_path / "base-rootfs"
+            base_rootfs.mkdir()
+            (base_rootfs / "bin").mkdir()
+            (base_rootfs / "bin" / "sh").write_text("#!/bin/sh\n")
+            (base_rootfs / "bin" / "sh").chmod(0o755)
+            (base_rootfs / "init").write_text("#!/bin/sh\necho base\n")
+            (base_rootfs / "init").chmod(0o755)
+            (base_rootfs / "etc").mkdir()
+            (base_rootfs / "etc" / "base.conf").write_text("base=1\n")
+            base_plain = temp_path / "base.cpio"
+            base_lz4 = temp_path / "base.cpio.lz4"
+            pack_initrd(base_rootfs, base_plain, compress=False)
+            subprocess.run(
+                ["lz4", "-z", "-f", str(base_plain), str(base_lz4)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            overlay_rootfs = temp_path / "overlay-rootfs"
+            overlay_rootfs.mkdir()
+            modules_dir = overlay_rootfs / "lib" / "modules" / "5.10.0"
+            modules_dir.mkdir(parents=True)
+            (modules_dir / "modules.load").write_text("virtio_blk\n")
+            (overlay_rootfs / "etc").mkdir()
+            (overlay_rootfs / "etc" / "overlay.conf").write_text("overlay=1\n")
+            overlay_plain = temp_path / "overlay.cpio"
+            overlay_lz4 = temp_path / "overlay.cpio.lz4"
+            pack_initrd(overlay_rootfs, overlay_plain, compress=False)
+            subprocess.run(
+                ["lz4", "-z", "-f", str(overlay_plain), str(overlay_lz4)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            merged_initrd = temp_path / "merged.cpio.gz"
+            merged_rootfs = temp_path / "merged-rootfs"
+
+            build_merged_initrd(base_lz4, overlay_lz4, output_path=merged_initrd)
+            unpack_initrd(merged_initrd, merged_rootfs)
+
+            self.assertEqual((merged_rootfs / "etc" / "base.conf").read_text(), "base=1\n")
+            self.assertEqual(
+                (merged_rootfs / "etc" / "overlay.conf").read_text(),
+                "overlay=1\n",
+            )
+            self.assertEqual(
+                (merged_rootfs / "lib" / "modules" / "5.10.0" / "modules.load").read_text(),
+                "virtio_blk\n",
+            )
 
     def test_build_merged_initrd_requires_base_init(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

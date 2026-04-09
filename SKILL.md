@@ -16,6 +16,7 @@ Before running commands that touch the host toolchain, assume these external too
 - `gzip`
 - `git`
 - `docker` with daemon access
+- `lz4`
 - `mkfs.ext4`
 - `qemu-system-x86_64`, `qemu-system-arm`, and/or `qemu-system-aarch64`
 
@@ -58,6 +59,7 @@ Overlay input may be either:
 Behavior that matters:
 
 - The base initrd is the explicit `--initrd` value, or the default BusyBox initrd if `--initrd` is omitted
+- Packed base or overlay initrds may be gzip, lz4, or plain `cpio`
 - The overlay tree is copied on top of the base tree before boot
 - The merged initrd gets a small wrapper `/init` that reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before handing off to the original init
 - The default BusyBox initrd is built with `modprobe` support for this flow
@@ -100,7 +102,7 @@ testvm initrd unpack INPUT_INITRD OUTPUT_DIR
 
 Behavior:
 
-- Unpacks a gzip-compressed or plain `cpio` initrd into `OUTPUT_DIR`
+- Unpacks a gzip-compressed, lz4-compressed, or plain `cpio` initrd into `OUTPUT_DIR`
 - Prints the output directory on success
 - Creates `OUTPUT_DIR` if needed
 - Refuses to unpack into a non-empty directory
