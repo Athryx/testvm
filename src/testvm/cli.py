@@ -126,6 +126,12 @@ def run_command(
         list[str] | None,
         typer.Option(help="Additional raw QEMU arguments. Repeatable."),
     ] = None,
+    module_initrd: Annotated[
+        Path | None,
+        typer.Option(
+            help="Packed initrd or unpacked rootfs directory to merge onto the base initrd before boot.",
+        ),
+    ] = None,
     share_dir: Annotated[
         Path | None,
         typer.Option(help="Host directory to snapshot into a mounted guest ext4 volume."),
@@ -161,6 +167,7 @@ def run_command(
             smp=smp,
             append=append or (),
             qemu_arg=qemu_arg or (),
+            module_initrd=module_initrd,
             workdir=workdir,
             share_dir=share_dir,
             sync_share_back=sync_share_back,

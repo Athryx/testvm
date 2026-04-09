@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import shutil
 import subprocess
 from pathlib import Path
@@ -7,10 +8,189 @@ from pathlib import Path
 from ._errors import CommandExecutionError, TestvmError
 
 _GZIP_MAGIC = b"\x1f\x8b"
+_ORIGINAL_INIT_RELATIVE_PATH = Path(".testvm") / "original-init"
 
 
 def _check_existing_output(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _remove_existing(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _copy_entry(source: Path, destination: Path) -> None:
+    if source.is_symlink():
+        if destination.exists() or destination.is_symlink():
+            _remove_existing(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.symlink_to(source.readlink())
+        return
+
+    if source.is_dir():
+        if destination.exists() and not destination.is_dir():
+            _remove_existing(destination)
+        shutil.copytree(
+            source,
+            destination,
+            symlinks=True,
+            dirs_exist_ok=True,
+            copy_function=shutil.copy2,
+        )
+        return
+
+    if destination.exists():
+        _remove_existing(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination, follow_symlinks=False)
+
+
+def _copy_tree_contents(source_dir: Path, destination_dir: Path) -> None:
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    for child in source_dir.iterdir():
+        _copy_entry(child, destination_dir / child.name)
+
+
+def _populate_rootfs_tree(source_path: Path, destination_dir: Path) -> None:
+    if source_path.is_dir():
+        _copy_tree_contents(source_path, destination_dir)
+        return
+    if source_path.is_file():
+        unpack_initrd(source_path, destination_dir)
+        return
+    raise TestvmError(f"Initrd overlay path does not exist: {source_path}")
+
+
+def _write_module_init_wrapper(rootfs_dir: Path) -> None:
+    init_path = rootfs_dir / "init"
+    if not (init_path.exists() or init_path.is_symlink()):
+        raise TestvmError(f"Base initrd does not contain /init: {rootfs_dir}")
+
+    shell_path = rootfs_dir / "bin" / "sh"
+    if not (shell_path.exists() or shell_path.is_symlink()):
+        raise TestvmError(
+            f"Merged initrd does not contain /bin/sh required for the module wrapper: {rootfs_dir}"
+        )
+
+    original_init_path = rootfs_dir / _ORIGINAL_INIT_RELATIVE_PATH
+    original_init_path.parent.mkdir(parents=True, exist_ok=True)
+    if original_init_path.exists() or original_init_path.is_symlink():
+        _remove_existing(original_init_path)
+    init_path.rename(original_init_path)
+
+    wrapper = """#!/bin/sh
+set -eu
+
+mkdir -p /dev /proc /sys /run /tmp /root
+[ -c /dev/console ] || mknod -m 600 /dev/console c 5 1 2>/dev/null || true
+
+testvm_mounted_proc=0
+testvm_mounted_sys=0
+testvm_mounted_dev=0
+
+if mount -t proc proc /proc 2>/dev/null; then
+    testvm_mounted_proc=1
+fi
+if mount -t sysfs sysfs /sys 2>/dev/null; then
+    testvm_mounted_sys=1
+fi
+if mount -t devtmpfs devtmpfs /dev 2>/dev/null; then
+    testvm_mounted_dev=1
+fi
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+run_testvm_modprobe() {
+    if command -v modprobe >/dev/null 2>&1; then
+        modprobe "$1"
+    elif command -v busybox >/dev/null 2>&1; then
+        busybox modprobe "$1"
+    else
+        return 127
+    fi
+}
+
+load_testvm_modules() {
+    kernel_release=$(uname -r 2>/dev/null || echo "")
+    modules_load=""
+
+    if [ -n "$kernel_release" ] && [ -f "/lib/modules/$kernel_release/modules.load" ]; then
+        modules_load="/lib/modules/$kernel_release/modules.load"
+    else
+        for candidate in /lib/modules/*/modules.load; do
+            if [ -f "$candidate" ]; then
+                modules_load="$candidate"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$modules_load" ] || [ ! -f "$modules_load" ]; then
+        return 0
+    fi
+
+    if ! command -v modprobe >/dev/null 2>&1 && ! command -v busybox >/dev/null 2>&1; then
+        echo "warning: no modprobe applet available for $modules_load"
+        return 0
+    fi
+
+    while IFS= read -r module_entry || [ -n "$module_entry" ]; do
+        case "$module_entry" in
+            ""|[#]*)
+                continue
+                ;;
+        esac
+
+        module_name=$module_entry
+        module_name=${module_name##*/}
+        case "$module_name" in
+            *.ko.gz)
+                module_name=${module_name%.ko.gz}
+                ;;
+            *.ko.xz)
+                module_name=${module_name%.ko.xz}
+                ;;
+            *.ko.zst)
+                module_name=${module_name%.ko.zst}
+                ;;
+            *.ko)
+                module_name=${module_name%.ko}
+                ;;
+        esac
+
+        if [ -z "$module_name" ]; then
+            continue
+        fi
+
+        set +e
+        run_testvm_modprobe "$module_name"
+        status=$?
+        set -e
+        if [ "$status" -ne 0 ]; then
+            echo "warning: modprobe failed for $module_name from $module_entry ($status)"
+        fi
+    done < "$modules_load"
+}
+
+load_testvm_modules
+
+if [ "$testvm_mounted_dev" = "1" ]; then
+    umount /dev 2>/dev/null || true
+fi
+if [ "$testvm_mounted_sys" = "1" ]; then
+    umount /sys 2>/dev/null || true
+fi
+if [ "$testvm_mounted_proc" = "1" ]; then
+    umount /proc 2>/dev/null || true
+fi
+
+exec /.testvm/original-init "$@"
+"""
+    init_path.write_text(wrapper)
+    init_path.chmod(0o755)
 
 
 def pack_initrd(
@@ -150,3 +330,44 @@ def unpack_initrd(initrd_path: str | Path, output_dir: str | Path) -> Path:
             raise CommandExecutionError(result.stderr.decode().strip() or "cpio failed")
 
     return destination
+
+
+def build_merged_initrd(
+    base_initrd: str | Path,
+    module_overlay: str | Path,
+    *,
+    output_path: str | Path | None = None,
+) -> Path:
+    base_path = Path(base_initrd).expanduser().resolve()
+    overlay_path = Path(module_overlay).expanduser().resolve()
+
+    if not base_path.is_file():
+        raise TestvmError(f"Base initrd does not exist: {base_path}")
+
+    requested_output: Path
+    temp_output_handle: tempfile.NamedTemporaryFile[bytes] | None = None
+    if output_path is None:
+        temp_output_handle = tempfile.NamedTemporaryFile(
+            prefix="testvm-merged-initrd-",
+            suffix=".cpio.gz",
+            delete=False,
+        )
+        temp_output_handle.close()
+        requested_output = Path(temp_output_handle.name).resolve()
+    else:
+        requested_output = Path(output_path).expanduser().resolve()
+
+    _check_existing_output(requested_output)
+
+    with tempfile.TemporaryDirectory(prefix="testvm-merge-initrd-") as temp_dir:
+        temp_root = Path(temp_dir)
+        base_rootfs = temp_root / "base-rootfs"
+        overlay_rootfs = temp_root / "overlay-rootfs"
+
+        unpack_initrd(base_path, base_rootfs)
+        _populate_rootfs_tree(overlay_path, overlay_rootfs)
+        _copy_tree_contents(overlay_rootfs, base_rootfs)
+        _write_module_init_wrapper(base_rootfs)
+        pack_initrd(base_rootfs, requested_output, compress=True)
+
+    return requested_output

@@ -4,6 +4,7 @@
 
 - pack a root filesystem directory into a Linux initrd
 - unpack an initrd back into a directory
+- merge a base initrd with a module/config overlay initrd or rootfs
 - build a default BusyBox-based initrd
 - run a kernel under QEMU on `x86_64`, `arm`, or `aarch64`
 
@@ -46,11 +47,14 @@ testvm initrd build-default --arch x86_64
 testvm run ./vmlinux --gdb-port 1234 --append panic=-1
 testvm initrd build-default --arch arm
 testvm run ./zImage --arch arm
+testvm run ./vmlinux --module-initrd ./initrd_out
+testvm run ./vmlinux --initrd ./base.cpio.gz --module-initrd ./modules.cpio.gz
 testvm run ./vmlinux --share-dir ./shared --autorun /mnt/testvm-share/run.sh
 testvm run ./vmlinux --run-host-path ./shared/run.sh
 ```
 
 `testvm run` auto-detects the kernel architecture from the ELF header when `--arch` is omitted. Raw ARM kernel images such as `zImage` require `--arch arm`. If `--initrd` is omitted, `testvm` reuses or builds a cached BusyBox initrd for the selected architecture.
+When `--module-initrd` is provided, `testvm` merges that packed initrd or unpacked rootfs onto the base initrd before boot and installs a small `/init` wrapper that reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before handing control to the original init.
 When `--share-dir` is provided, `testvm` snapshots that host directory into an ext4 image, adds it to QEMU as a virtio block drive, and the default init script mounts it at `/mnt/testvm-share`. `--run-host-path` is the convenience path for automatically running a host-side script or binary from that mounted directory after init completes.
 
 ## Docker Builder
@@ -69,6 +73,7 @@ apt-get update && apt-get install -y --no-install-recommends \
 
 ```python
 from testvm import (
+    build_merged_initrd,
     build_default_initrd,
     pack_ext4_image,
     pack_initrd,
@@ -80,12 +85,13 @@ from testvm import (
 initrd = build_default_initrd(arch="arm")
 pack_initrd("rootfs", "rootfs.cpio.gz")
 unpack_initrd("rootfs.cpio.gz", "rootfs-out")
+build_merged_initrd(initrd, "initrd_out", output_path="merged.cpio.gz")
 pack_ext4_image("shared", "shared.img")
 unpack_ext4_image("shared.img", "shared-out")
 run_vm(
     kernel="zImage",
     arch="arm",
-    initrd=initrd,
+    initrd="merged.cpio.gz",
     gdb_port=1234,
     run_host_path="shared/run.sh",
 )

@@ -64,6 +64,8 @@ class CliTests(unittest.TestCase):
             kernel.write_bytes(b"not-used")
             shared = Path(temp_dir) / "shared"
             shared.mkdir()
+            module_rootfs = Path(temp_dir) / "module-rootfs"
+            module_rootfs.mkdir()
 
             with mock.patch("testvm.cli.run_vm", return_value=7) as run_mock:
                 result = runner.invoke(
@@ -79,6 +81,8 @@ class CliTests(unittest.TestCase):
                         "panic=-1",
                         "--qemu-arg",
                         "-no-reboot",
+                        "--module-initrd",
+                        str(module_rootfs),
                         "--share-dir",
                         str(shared),
                         "--autorun",
@@ -89,6 +93,7 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(result.exit_code, 7)
             run_mock.assert_called_once()
+            self.assertEqual(run_mock.call_args.kwargs["module_initrd"], module_rootfs)
 
     def test_run_command_accepts_arm_arch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

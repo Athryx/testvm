@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,7 +21,12 @@ from testvm._busybox import (
     build_default_initrd,
 )
 from testvm._ext4 import pack_ext4_image, unpack_ext4_image
-from testvm._initrd import pack_initrd, unpack_initrd
+from testvm._initrd import (
+    _write_module_init_wrapper,
+    build_merged_initrd,
+    pack_initrd,
+    unpack_initrd,
+)
 from testvm._paths import get_data_dir
 from testvm._qemu import _build_qemu_command, run_vm
 
@@ -94,6 +100,148 @@ class InitrdTests(unittest.TestCase):
 
             with self.assertRaises(TestvmError):
                 unpack_initrd(initrd, output_dir)
+
+    def test_build_merged_initrd_accepts_overlay_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            base_rootfs = temp_path / "base-rootfs"
+            base_rootfs.mkdir()
+            (base_rootfs / "bin").mkdir()
+            (base_rootfs / "bin" / "sh").write_text("#!/bin/sh\n")
+            (base_rootfs / "bin" / "sh").chmod(0o755)
+            (base_rootfs / "init").write_text("#!/bin/sh\necho base\n")
+            (base_rootfs / "init").chmod(0o755)
+            (base_rootfs / "etc").mkdir()
+            (base_rootfs / "etc" / "base.conf").write_text("base=1\n")
+            base_initrd = temp_path / "base.cpio.gz"
+            pack_initrd(base_rootfs, base_initrd)
+
+            overlay_rootfs = temp_path / "overlay-rootfs"
+            overlay_rootfs.mkdir()
+            modules_dir = overlay_rootfs / "lib" / "modules" / "5.10.0"
+            modules_dir.mkdir(parents=True)
+            (modules_dir / "modules.load").write_text(
+                "# comment\nkernel/drivers/block/virtio_blk.ko\nvirtio_rng\n"
+            )
+            (modules_dir / "modules.dep").write_text("")
+            (modules_dir / "virtio_blk.ko").write_text("ko")
+            (overlay_rootfs / "etc").mkdir()
+            (overlay_rootfs / "etc" / "overlay.conf").write_text("overlay=1\n")
+
+            merged_initrd = temp_path / "merged.cpio.gz"
+            merged_rootfs = temp_path / "merged-rootfs"
+
+            build_merged_initrd(base_initrd, overlay_rootfs, output_path=merged_initrd)
+            unpack_initrd(merged_initrd, merged_rootfs)
+
+            self.assertEqual((merged_rootfs / "etc" / "base.conf").read_text(), "base=1\n")
+            self.assertEqual(
+                (merged_rootfs / "etc" / "overlay.conf").read_text(),
+                "overlay=1\n",
+            )
+            self.assertTrue((merged_rootfs / ".testvm" / "original-init").exists())
+            self.assertIn(
+                "load_testvm_modules",
+                (merged_rootfs / "init").read_text(),
+            )
+            self.assertIn(
+                "modules.load",
+                (merged_rootfs / "init").read_text(),
+            )
+            self.assertEqual(
+                (merged_rootfs / "lib" / "modules" / "5.10.0" / "modules.load").read_text(),
+                "# comment\nkernel/drivers/block/virtio_blk.ko\nvirtio_rng\n",
+            )
+
+    def test_build_merged_initrd_accepts_overlay_initrd(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            base_rootfs = temp_path / "base-rootfs"
+            base_rootfs.mkdir()
+            (base_rootfs / "bin").mkdir()
+            (base_rootfs / "bin" / "sh").write_text("#!/bin/sh\n")
+            (base_rootfs / "bin" / "sh").chmod(0o755)
+            (base_rootfs / "init").write_text("#!/bin/sh\necho base\n")
+            (base_rootfs / "init").chmod(0o755)
+            base_initrd = temp_path / "base.cpio.gz"
+            pack_initrd(base_rootfs, base_initrd)
+
+            overlay_rootfs = temp_path / "overlay-rootfs"
+            overlay_rootfs.mkdir()
+            modules_dir = overlay_rootfs / "lib" / "modules" / "5.10.0"
+            modules_dir.mkdir(parents=True)
+            (modules_dir / "modules.load").write_text("virtio_blk\n")
+            overlay_initrd = temp_path / "overlay.cpio.gz"
+            pack_initrd(overlay_rootfs, overlay_initrd)
+
+            merged_initrd = temp_path / "merged.cpio.gz"
+            merged_rootfs = temp_path / "merged-rootfs"
+
+            build_merged_initrd(base_initrd, overlay_initrd, output_path=merged_initrd)
+            unpack_initrd(merged_initrd, merged_rootfs)
+
+            self.assertEqual(
+                (merged_rootfs / "lib" / "modules" / "5.10.0" / "modules.load").read_text(),
+                "virtio_blk\n",
+            )
+            self.assertTrue((merged_rootfs / ".testvm" / "original-init").exists())
+
+    def test_build_merged_initrd_requires_base_init(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            base_rootfs = temp_path / "base-rootfs"
+            base_rootfs.mkdir()
+            (base_rootfs / "bin").mkdir()
+            (base_rootfs / "bin" / "sh").write_text("#!/bin/sh\n")
+            (base_rootfs / "bin" / "sh").chmod(0o755)
+            base_initrd = temp_path / "base.cpio.gz"
+            pack_initrd(base_rootfs, base_initrd)
+
+            overlay_rootfs = temp_path / "overlay-rootfs"
+            overlay_rootfs.mkdir()
+
+            with self.assertRaisesRegex(TestvmError, "does not contain /init"):
+                build_merged_initrd(base_initrd, overlay_rootfs)
+
+    def test_module_init_wrapper_is_valid_sh_syntax(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rootfs = Path(temp_dir)
+            (rootfs / "bin").mkdir()
+            shell_path = rootfs / "bin" / "sh"
+            shell_path.write_text("#!/bin/sh\n")
+            shell_path.chmod(0o755)
+            init_path = rootfs / "init"
+            init_path.write_text("#!/bin/sh\necho base\n")
+            init_path.chmod(0o755)
+
+            _write_module_init_wrapper(rootfs)
+
+            result = subprocess.run(
+                ["sh", "-n", str(rootfs / "init")],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_module_init_wrapper_unmounts_temporary_mounts_before_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rootfs = Path(temp_dir)
+            (rootfs / "bin").mkdir()
+            shell_path = rootfs / "bin" / "sh"
+            shell_path.write_text("#!/bin/sh\n")
+            shell_path.chmod(0o755)
+            init_path = rootfs / "init"
+            init_path.write_text("#!/bin/sh\necho base\n")
+            init_path.chmod(0o755)
+
+            _write_module_init_wrapper(rootfs)
+
+            wrapper = (rootfs / "init").read_text()
+            self.assertIn('if [ "$testvm_mounted_sys" = "1" ]; then', wrapper)
+            self.assertIn("umount /sys 2>/dev/null || true", wrapper)
+            self.assertIn("umount /proc 2>/dev/null || true", wrapper)
+            self.assertIn("umount /dev 2>/dev/null || true", wrapper)
 
 
 class Ext4Tests(unittest.TestCase):
@@ -236,6 +384,9 @@ class BusyBoxBuildTests(unittest.TestCase):
             self.assertNotIn("olddefconfig", run_cmd[-1])
             self.assertIn("CONFIG_TC=y", run_cmd[-1])
             self.assertIn("# CONFIG_TC is not set", run_cmd[-1])
+            self.assertIn("CONFIG_MODPROBE=y", run_cmd[-1])
+            self.assertIn("CONFIG_INSMOD=y", run_cmd[-1])
+            self.assertIn("# CONFIG_MODPROBE_SMALL is not set", run_cmd[-1])
 
             build_mount = next(item for item in run_cmd if f"dst={DOCKER_BUILD_DIR}" in item)
             rootfs_mount = next(item for item in run_cmd if f"dst={DOCKER_ROOTFS_DIR}" in item)
@@ -410,6 +561,65 @@ class RunVmTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             build_mock.assert_called_once()
             run_mock.assert_called_once()
+
+    def test_run_vm_merges_module_initrd_onto_default_base(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            kernel = temp_path / "vmlinux"
+            base_initrd = temp_path / "base-initrd.cpio.gz"
+            merged_initrd = temp_path / "merged-initrd.cpio.gz"
+            overlay_dir = temp_path / "overlay-rootfs"
+            overlay_dir.mkdir()
+            _make_elf(kernel, 62)
+            base_initrd.write_bytes(b"base")
+            merged_initrd.write_bytes(b"merged")
+
+            with mock.patch("testvm._qemu.build_default_initrd", return_value=base_initrd) as build_mock:
+                with mock.patch("testvm._qemu.build_merged_initrd", return_value=merged_initrd) as merge_mock:
+                    with mock.patch("testvm._qemu.subprocess.run") as run_mock:
+                        run_mock.return_value.returncode = 0
+                        exit_code = run_vm(kernel=kernel, module_initrd=overlay_dir)
+
+            self.assertEqual(exit_code, 0)
+            build_mock.assert_called_once()
+            merge_mock.assert_called_once()
+            self.assertEqual(merge_mock.call_args.args[0], base_initrd)
+            self.assertEqual(merge_mock.call_args.args[1], overlay_dir)
+            self.assertIn("merged-initrd.cpio.gz", str(merge_mock.call_args.kwargs["output_path"]))
+            command = run_mock.call_args.args[0]
+            self.assertIn(str(merged_initrd), command)
+
+    def test_run_vm_merges_module_initrd_onto_explicit_base(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            kernel = temp_path / "vmlinux"
+            base_initrd = temp_path / "base-initrd.cpio.gz"
+            merged_initrd = temp_path / "merged-initrd.cpio.gz"
+            overlay_initrd = temp_path / "overlay-initrd.cpio.gz"
+            _make_elf(kernel, 62)
+            base_initrd.write_bytes(b"base")
+            overlay_initrd.write_bytes(b"overlay")
+            merged_initrd.write_bytes(b"merged")
+
+            with mock.patch("testvm._qemu.build_default_initrd") as build_mock:
+                with mock.patch("testvm._qemu.build_merged_initrd", return_value=merged_initrd) as merge_mock:
+                    with mock.patch("testvm._qemu.subprocess.run") as run_mock:
+                        run_mock.return_value.returncode = 0
+                        exit_code = run_vm(
+                            kernel=kernel,
+                            initrd=base_initrd,
+                            module_initrd=overlay_initrd,
+                        )
+
+            self.assertEqual(exit_code, 0)
+            build_mock.assert_not_called()
+            merge_mock.assert_called_once_with(
+                base_initrd,
+                overlay_initrd,
+                output_path=mock.ANY,
+            )
+            command = run_mock.call_args.args[0]
+            self.assertIn(str(merged_initrd), command)
 
     def test_run_vm_packs_share_image_and_syncs_back(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

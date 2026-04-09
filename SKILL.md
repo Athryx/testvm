@@ -46,6 +46,22 @@ Important paths:
 - BusyBox build dir: `<workdir>/busybox-build/<arch>/<busybox_ref>`
 - BusyBox rootfs dir: `<workdir>/busybox-rootfs/<arch>/<busybox_ref>`
 
+## Module Overlay Merging
+
+`testvm` can merge a module/config overlay onto a base initrd during `testvm run`.
+
+Overlay input may be either:
+
+- a packed initrd file, or
+- an unpacked rootfs directory such as `initrd_out/`
+
+Behavior that matters:
+
+- The base initrd is the explicit `--initrd` value, or the default BusyBox initrd if `--initrd` is omitted
+- The overlay tree is copied on top of the base tree before boot
+- The merged initrd gets a small wrapper `/init` that reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before handing off to the original init
+- The default BusyBox initrd is built with `modprobe` support for this flow
+
 ## Command Reference
 
 ### `testvm initrd pack`
@@ -182,7 +198,7 @@ testvm ext4 unpack ./shared.img ./shared-out
 Syntax:
 
 ```bash
-testvm run KERNEL [--arch ARCH] [--initrd PATH] [--workdir PATH] [--gdb-port PORT] [--memory SIZE] [--smp N] [--append ARG]... [--qemu-arg ARG]... [--share-dir PATH] [--sync-share-back] [--autorun GUEST_PATH] [--run-host-path HOST_PATH] [--force-rebuild-initrd]
+testvm run KERNEL [--arch ARCH] [--initrd PATH] [--workdir PATH] [--gdb-port PORT] [--memory SIZE] [--smp N] [--append ARG]... [--qemu-arg ARG]... [--module-initrd PATH] [--share-dir PATH] [--sync-share-back] [--autorun GUEST_PATH] [--run-host-path HOST_PATH] [--force-rebuild-initrd]
 ```
 
 Options:
@@ -196,6 +212,7 @@ Options:
 - `--smp`: guest vCPU count, default `1`
 - `--append`: additional kernel command line arguments; repeat this flag for multiple values
 - `--qemu-arg`: additional raw QEMU arguments; repeat this flag for multiple values
+- `--module-initrd`: packed initrd file or unpacked rootfs directory to merge onto the base initrd before boot
 - `--share-dir`: snapshots a host directory into an ext4 image and mounts it in the guest at `/mnt/testvm-share`
 - `--sync-share-back`: extracts the shared ext4 image back into the host directory after QEMU exits
 - `--autorun`: absolute guest path to execute after init completes
@@ -208,6 +225,8 @@ Behavior:
 - If `--arch` is omitted, auto-detects the architecture from the ELF header
 - Raw non-ELF kernels cannot be auto-detected; for example, `zImage` requires `--arch arm`
 - If `--initrd` is omitted, calls `testvm initrd build-default` logic internally
+- If `--module-initrd` is set, `testvm` merges that overlay onto the base initrd before launching QEMU
+- The module-loading wrapper reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before the original init runs
 - If `--share-dir` is used, `testvm` creates a temporary ext4 image and adds it to QEMU as a virtio block drive
 - If `--run-host-path` is used without `--share-dir`, the shared directory defaults to the file's parent directory
 - The default init script mounts the shared image at `/mnt/testvm-share` and drops to a shell after any autorun program exits
@@ -232,6 +251,8 @@ testvm run ./vmlinux --gdb-port 1234 --append panic=-1
 testvm run ./vmlinux --memory 1G --smp 2 --qemu-arg -no-reboot
 testvm run ./zImage --arch arm
 testvm run ./Image --arch aarch64 --initrd ./initrd.cpio.gz
+testvm run ./vmlinux --module-initrd ./initrd_out
+testvm run ./vmlinux --initrd ./base.cpio.gz --module-initrd ./modules.cpio.gz
 testvm run ./vmlinux --share-dir ./shared --autorun /mnt/testvm-share/run.sh
 testvm run ./vmlinux --run-host-path ./shared/run.sh
 ```
@@ -243,6 +264,7 @@ Use these defaults unless the user asks for something else:
 - Prefer omitting `--arch` for ELF kernels so `testvm` auto-detects the right target
 - Add `--arch arm` for raw ARM images such as `zImage`
 - Omit `--initrd` unless the user already has a custom initrd
+- Use `--module-initrd` when the user has a module/config overlay initrd or unpacked module tree
 - Use `--gdb-port 1234` when the user wants to attach GDB before boot
 - Use repeated `--append` flags for separate kernel args
 - Use repeated `--qemu-arg` flags for raw QEMU passthrough arguments

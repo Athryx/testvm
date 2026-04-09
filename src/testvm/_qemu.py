@@ -9,6 +9,7 @@ from typing import Iterable
 from ._arch import Architecture, detect_kernel_arch, normalize_arch
 from ._busybox import build_default_initrd
 from ._ext4 import pack_ext4_image, unpack_ext4_image
+from ._initrd import build_merged_initrd
 from ._errors import CommandExecutionError, TestvmError
 
 _SHARE_MOUNT_POINT = "/mnt/testvm-share"
@@ -176,6 +177,7 @@ def run_vm(
     smp: int = 1,
     append: Iterable[str] = (),
     qemu_arg: Iterable[str] = (),
+    module_initrd: str | Path | None = None,
     workdir: str | Path | None = None,
     share_dir: str | Path | None = None,
     sync_share_back: bool = False,
@@ -211,6 +213,13 @@ def run_vm(
         )
 
     with tempfile.TemporaryDirectory(prefix="testvm-share-") as temp_dir:
+        if module_initrd is not None:
+            initrd_path = build_merged_initrd(
+                initrd_path,
+                module_initrd,
+                output_path=Path(temp_dir) / "merged-initrd.cpio.gz",
+            )
+
         share_image: Path | None = None
         if resolved_share_dir is not None:
             share_image = pack_ext4_image(resolved_share_dir, Path(temp_dir) / "share.img")
