@@ -3,16 +3,33 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+from enum import StrEnum
 from pathlib import Path
 from typing import Iterable
 
 from ._arch import Architecture, detect_kernel_arch, normalize_arch
 from ._busybox import build_default_initrd
 from ._ext4 import pack_ext4_image, unpack_ext4_image
-from ._initrd import build_merged_initrd
+from ._initrd import _build_composed_initrd
 from ._errors import CommandExecutionError, TestvmError
 
 _SHARE_MOUNT_POINT = "/mnt/testvm-share"
+
+
+class ShareMode(StrEnum):
+    INITRD = "initrd"
+    EXT4 = "ext4"
+
+
+def normalize_share_mode(share_mode: str | ShareMode) -> ShareMode:
+    if isinstance(share_mode, ShareMode):
+        return share_mode
+
+    normalized = share_mode.lower()
+    try:
+        return ShareMode(normalized)
+    except ValueError as exc:
+        raise TestvmError(f"Unsupported share mode: {share_mode}") from exc
 
 
 def _validate_autorun_path(path: str) -> str:
@@ -180,6 +197,7 @@ def run_vm(
     module_initrd: str | Path | None = None,
     workdir: str | Path | None = None,
     share_dir: str | Path | None = None,
+    share_mode: str | ShareMode = ShareMode.INITRD,
     sync_share_back: bool = False,
     autorun: str | None = None,
     run_host_path: str | Path | None = None,
@@ -195,6 +213,9 @@ def run_vm(
     )
     if sync_share_back and resolved_share_dir is None:
         raise TestvmError("--sync-share-back requires --share-dir or --run-host-path")
+    normalized_share_mode = normalize_share_mode(share_mode)
+    if sync_share_back and normalized_share_mode is not ShareMode.EXT4:
+        raise TestvmError("--sync-share-back requires --share-mode ext4")
 
     normalized_arch = (
         detect_kernel_arch(kernel_path) if arch is None else normalize_arch(arch)
@@ -213,15 +234,26 @@ def run_vm(
         )
 
     with tempfile.TemporaryDirectory(prefix="testvm-share-") as temp_dir:
-        if module_initrd is not None:
-            initrd_path = build_merged_initrd(
+        if module_initrd is not None or (
+            resolved_share_dir is not None
+            and normalized_share_mode is ShareMode.INITRD
+        ):
+            initrd_path = _build_composed_initrd(
                 initrd_path,
-                module_initrd,
                 output_path=Path(temp_dir) / "merged-initrd.cpio.gz",
+                module_overlay=module_initrd,
+                shared_dir=(
+                    resolved_share_dir
+                    if normalized_share_mode is ShareMode.INITRD
+                    else None
+                ),
             )
 
         share_image: Path | None = None
-        if resolved_share_dir is not None:
+        if (
+            resolved_share_dir is not None
+            and normalized_share_mode is ShareMode.EXT4
+        ):
             share_image = pack_ext4_image(resolved_share_dir, Path(temp_dir) / "share.img")
 
         command = _build_qemu_command(

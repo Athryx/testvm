@@ -51,13 +51,14 @@ testvm run ./zImage --arch arm
 testvm run ./vmlinux --module-initrd ./initrd_out
 testvm run ./vmlinux --initrd ./base.cpio.gz --module-initrd ./modules.cpio.gz
 testvm run ./vmlinux --share-dir ./shared --autorun /mnt/testvm-share/run.sh
+testvm run ./vmlinux --share-dir ./shared --share-mode ext4 --sync-share-back
 testvm run ./vmlinux --run-host-path ./shared/run.sh
 ```
 
 `testvm run` auto-detects the kernel architecture from the ELF header when `--arch` is omitted. Raw ARM kernel images such as `zImage` require `--arch arm`. If `--initrd` is omitted, `testvm` reuses or builds a cached BusyBox initrd for the selected architecture.
 `testvm initrd unpack` accepts gzip-compressed, lz4-compressed, or plain `cpio` initrds.
 When `--module-initrd` is provided, `testvm` merges that packed initrd or unpacked rootfs onto the base initrd before boot and installs a small `/init` wrapper that reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before handing control to the original init. Packed base or overlay initrds may be gzip, lz4, or plain `cpio`.
-When `--share-dir` is provided, `testvm` snapshots that host directory into an ext4 image, adds it to QEMU as a virtio block drive, and the default init script mounts it at `/mnt/testvm-share`. `--run-host-path` is the convenience path for automatically running a host-side script or binary from that mounted directory after init completes.
+When `--share-dir` is provided, `testvm` shares that host directory at `/mnt/testvm-share`. The default `--share-mode initrd` embeds the files directly into the boot initrd, which avoids guest block-device discovery issues. `--share-mode ext4` preserves the previous virtio-block flow and is the only mode that supports `--sync-share-back`. `--run-host-path` is the convenience path for automatically running a host-side script or binary from that shared directory after init completes.
 
 ## Docker Builder
 
@@ -75,6 +76,7 @@ apt-get update && apt-get install -y --no-install-recommends \
 
 ```python
 from testvm import (
+    ShareMode,
     build_merged_initrd,
     build_default_initrd,
     pack_ext4_image,
@@ -96,5 +98,6 @@ run_vm(
     initrd="merged.cpio.gz",
     gdb_port=1234,
     run_host_path="shared/run.sh",
+    share_mode=ShareMode.INITRD,
 )
 ```

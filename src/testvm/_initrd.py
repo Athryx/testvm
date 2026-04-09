@@ -11,6 +11,7 @@ _GZIP_MAGIC = b"\x1f\x8b"
 _LZ4_MAGIC = b"\x04\x22\x4d\x18"
 _LZ4_LEGACY_MAGIC = b"\x02\x21\x4c\x18"
 _ORIGINAL_INIT_RELATIVE_PATH = Path(".testvm") / "original-init"
+_SHARE_ROOTFS_RELATIVE_PATH = Path("mnt") / "testvm-share"
 
 
 def _check_existing_output(path: Path) -> None:
@@ -93,6 +94,15 @@ def _populate_rootfs_tree(source_path: Path, destination_dir: Path) -> None:
         unpack_initrd(source_path, destination_dir)
         return
     raise TestvmError(f"Initrd overlay path does not exist: {source_path}")
+
+
+def _populate_shared_directory(source_dir: Path, rootfs_dir: Path) -> None:
+    if not source_dir.is_dir():
+        raise TestvmError(f"Shared directory does not exist: {source_dir}")
+
+    share_root = rootfs_dir / _SHARE_ROOTFS_RELATIVE_PATH
+    share_root.mkdir(parents=True, exist_ok=True)
+    _copy_tree_contents(source_dir, share_root)
 
 
 def _write_module_init_wrapper(rootfs_dir: Path) -> None:
@@ -381,11 +391,32 @@ def build_merged_initrd(
     *,
     output_path: str | Path | None = None,
 ) -> Path:
-    base_path = Path(base_initrd).expanduser().resolve()
-    overlay_path = Path(module_overlay).expanduser().resolve()
+    return _build_composed_initrd(
+        base_initrd,
+        output_path=output_path,
+        module_overlay=module_overlay,
+    )
 
+
+def _build_composed_initrd(
+    base_initrd: str | Path,
+    *,
+    output_path: str | Path | None = None,
+    module_overlay: str | Path | None = None,
+    shared_dir: str | Path | None = None,
+) -> Path:
+    base_path = Path(base_initrd).expanduser().resolve()
     if not base_path.is_file():
         raise TestvmError(f"Base initrd does not exist: {base_path}")
+
+    overlay_path = (
+        None
+        if module_overlay is None
+        else Path(module_overlay).expanduser().resolve()
+    )
+    share_path = (
+        None if shared_dir is None else Path(shared_dir).expanduser().resolve()
+    )
 
     requested_output: Path
     temp_output_handle: tempfile.NamedTemporaryFile[bytes] | None = None
@@ -408,9 +439,13 @@ def build_merged_initrd(
         overlay_rootfs = temp_root / "overlay-rootfs"
 
         unpack_initrd(base_path, base_rootfs)
-        _populate_rootfs_tree(overlay_path, overlay_rootfs)
-        _copy_tree_contents(overlay_rootfs, base_rootfs)
-        _write_module_init_wrapper(base_rootfs)
+        if overlay_path is not None:
+            _populate_rootfs_tree(overlay_path, overlay_rootfs)
+            _copy_tree_contents(overlay_rootfs, base_rootfs)
+        if share_path is not None:
+            _populate_shared_directory(share_path, base_rootfs)
+        if overlay_path is not None:
+            _write_module_init_wrapper(base_rootfs)
         pack_initrd(base_rootfs, requested_output, compress=True)
 
     return requested_output

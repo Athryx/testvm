@@ -200,7 +200,7 @@ testvm ext4 unpack ./shared.img ./shared-out
 Syntax:
 
 ```bash
-testvm run KERNEL [--arch ARCH] [--initrd PATH] [--workdir PATH] [--gdb-port PORT] [--memory SIZE] [--smp N] [--append ARG]... [--qemu-arg ARG]... [--module-initrd PATH] [--share-dir PATH] [--sync-share-back] [--autorun GUEST_PATH] [--run-host-path HOST_PATH] [--force-rebuild-initrd]
+testvm run KERNEL [--arch ARCH] [--initrd PATH] [--workdir PATH] [--gdb-port PORT] [--memory SIZE] [--smp N] [--append ARG]... [--qemu-arg ARG]... [--module-initrd PATH] [--share-dir PATH] [--share-mode {initrd,ext4}] [--sync-share-back] [--autorun GUEST_PATH] [--run-host-path HOST_PATH] [--force-rebuild-initrd]
 ```
 
 Options:
@@ -215,8 +215,9 @@ Options:
 - `--append`: additional kernel command line arguments; repeat this flag for multiple values
 - `--qemu-arg`: additional raw QEMU arguments; repeat this flag for multiple values
 - `--module-initrd`: packed initrd file or unpacked rootfs directory to merge onto the base initrd before boot
-- `--share-dir`: snapshots a host directory into an ext4 image and mounts it in the guest at `/mnt/testvm-share`
-- `--sync-share-back`: extracts the shared ext4 image back into the host directory after QEMU exits
+- `--share-dir`: host directory to expose in the guest at `/mnt/testvm-share`
+- `--share-mode`: sharing transport; `initrd` is the default and `ext4` preserves the virtio-block flow
+- `--sync-share-back`: extracts the shared ext4 image back into the host directory after QEMU exits; requires `--share-mode ext4`
 - `--autorun`: absolute guest path to execute after init completes
 - `--run-host-path`: convenience flag that infers a share from the host file's parent and autoruns it in the guest
 - `--force-rebuild-initrd`: forces a rebuild of the auto-generated initrd
@@ -229,9 +230,10 @@ Behavior:
 - If `--initrd` is omitted, calls `testvm initrd build-default` logic internally
 - If `--module-initrd` is set, `testvm` merges that overlay onto the base initrd before launching QEMU
 - The module-loading wrapper reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before the original init runs
-- If `--share-dir` is used, `testvm` creates a temporary ext4 image and adds it to QEMU as a virtio block drive
+- If `--share-dir` is used with the default `--share-mode initrd`, `testvm` copies that directory into the boot initrd at `/mnt/testvm-share`
+- If `--share-dir` is used with `--share-mode ext4`, `testvm` creates a temporary ext4 image and adds it to QEMU as a virtio block drive
 - If `--run-host-path` is used without `--share-dir`, the shared directory defaults to the file's parent directory
-- The default init script mounts the shared image at `/mnt/testvm-share` and drops to a shell after any autorun program exits
+- The default BusyBox init script mounts ext4-backed shares when requested and drops to a shell after any autorun program exits
 - Returns QEMU's exit code directly
 
 Architecture-specific QEMU launch behavior:
@@ -256,6 +258,7 @@ testvm run ./Image --arch aarch64 --initrd ./initrd.cpio.gz
 testvm run ./vmlinux --module-initrd ./initrd_out
 testvm run ./vmlinux --initrd ./base.cpio.gz --module-initrd ./modules.cpio.gz
 testvm run ./vmlinux --share-dir ./shared --autorun /mnt/testvm-share/run.sh
+testvm run ./vmlinux --share-dir ./shared --share-mode ext4 --sync-share-back
 testvm run ./vmlinux --run-host-path ./shared/run.sh
 ```
 
@@ -271,7 +274,8 @@ Use these defaults unless the user asks for something else:
 - Use repeated `--append` flags for separate kernel args
 - Use repeated `--qemu-arg` flags for raw QEMU passthrough arguments
 - Prefer `--run-host-path` for quick "run this script/binary inside the guest" requests
-- Add `--sync-share-back` only when the user explicitly wants guest-side changes copied back to the host folder
+- Prefer the default `--share-mode initrd` unless the user specifically needs ext4 behavior or host sync-back
+- Add `--sync-share-back` only when the user explicitly wants guest-side changes copied back to the host folder; pair it with `--share-mode ext4`
 
 Examples:
 

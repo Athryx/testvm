@@ -8,6 +8,7 @@ import typer
 from . import (
     Architecture,
     DEFAULT_BUSYBOX_REF,
+    ShareMode,
     build_default_initrd,
     pack_ext4_image,
     pack_initrd,
@@ -134,13 +135,17 @@ def run_command(
     ] = None,
     share_dir: Annotated[
         Path | None,
-        typer.Option(help="Host directory to snapshot into a mounted guest ext4 volume."),
+        typer.Option(help="Host directory to share at /mnt/testvm-share."),
     ] = None,
+    share_mode: Annotated[
+        ShareMode,
+        typer.Option(help="How to expose --share-dir to the guest."),
+    ] = ShareMode.INITRD,
     sync_share_back: Annotated[
         bool,
         typer.Option(
             "--sync-share-back",
-            help="Extract the shared ext4 image back into the host directory after QEMU exits.",
+            help="Extract the shared ext4 image back into the host directory after QEMU exits. Requires --share-mode ext4.",
         ),
     ] = False,
     autorun: Annotated[
@@ -170,6 +175,7 @@ def run_command(
             module_initrd=module_initrd,
             workdir=workdir,
             share_dir=share_dir,
+            share_mode=share_mode,
             sync_share_back=sync_share_back,
             autorun=autorun,
             run_host_path=run_host_path,

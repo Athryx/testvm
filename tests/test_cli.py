@@ -85,6 +85,8 @@ class CliTests(unittest.TestCase):
                         str(module_rootfs),
                         "--share-dir",
                         str(shared),
+                        "--share-mode",
+                        "ext4",
                         "--autorun",
                         "/mnt/testvm-share/run.sh",
                         "--sync-share-back",
@@ -94,6 +96,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 7)
             run_mock.assert_called_once()
             self.assertEqual(run_mock.call_args.kwargs["module_initrd"], module_rootfs)
+            self.assertEqual(run_mock.call_args.kwargs["share_mode"], "ext4")
 
     def test_run_command_accepts_arm_arch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

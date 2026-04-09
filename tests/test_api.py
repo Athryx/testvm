@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from testvm import CommandExecutionError, DATA_DIR_ENV_VAR, TestvmError
+from testvm import CommandExecutionError, DATA_DIR_ENV_VAR, ShareMode, TestvmError
 from testvm._arch import Architecture, detect_kernel_arch, normalize_arch
 from testvm._busybox import (
     DEFAULT_BUSYBOX_REF,
@@ -22,6 +22,7 @@ from testvm._busybox import (
 )
 from testvm._ext4 import pack_ext4_image, unpack_ext4_image
 from testvm._initrd import (
+    _build_composed_initrd,
     _write_module_init_wrapper,
     build_merged_initrd,
     pack_initrd,
@@ -294,6 +295,82 @@ class InitrdTests(unittest.TestCase):
 
             with self.assertRaisesRegex(TestvmError, "does not contain /init"):
                 build_merged_initrd(base_initrd, overlay_rootfs)
+
+    def test_build_composed_initrd_can_embed_shared_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            base_rootfs = temp_path / "base-rootfs"
+            base_rootfs.mkdir()
+            (base_rootfs / "bin").mkdir()
+            (base_rootfs / "bin" / "sh").write_text("#!/bin/sh\n")
+            (base_rootfs / "bin" / "sh").chmod(0o755)
+            (base_rootfs / "init").write_text("#!/bin/sh\necho base\n")
+            (base_rootfs / "init").chmod(0o755)
+            base_initrd = temp_path / "base.cpio.gz"
+            pack_initrd(base_rootfs, base_initrd)
+
+            shared = temp_path / "shared"
+            shared.mkdir()
+            (shared / "run.sh").write_text("#!/bin/sh\necho shared\n")
+
+            composed_initrd = temp_path / "composed.cpio.gz"
+            composed_rootfs = temp_path / "composed-rootfs"
+
+            _build_composed_initrd(
+                base_initrd,
+                output_path=composed_initrd,
+                shared_dir=shared,
+            )
+            unpack_initrd(composed_initrd, composed_rootfs)
+
+            self.assertEqual(
+                (composed_rootfs / "mnt" / "testvm-share" / "run.sh").read_text(),
+                "#!/bin/sh\necho shared\n",
+            )
+
+    def test_build_composed_initrd_can_merge_modules_and_shared_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            base_rootfs = temp_path / "base-rootfs"
+            base_rootfs.mkdir()
+            (base_rootfs / "bin").mkdir()
+            (base_rootfs / "bin" / "sh").write_text("#!/bin/sh\n")
+            (base_rootfs / "bin" / "sh").chmod(0o755)
+            (base_rootfs / "init").write_text("#!/bin/sh\necho base\n")
+            (base_rootfs / "init").chmod(0o755)
+            base_initrd = temp_path / "base.cpio.gz"
+            pack_initrd(base_rootfs, base_initrd)
+
+            overlay_rootfs = temp_path / "overlay-rootfs"
+            overlay_rootfs.mkdir()
+            modules_dir = overlay_rootfs / "lib" / "modules" / "5.10.0"
+            modules_dir.mkdir(parents=True)
+            (modules_dir / "modules.load").write_text("virtio_blk\n")
+
+            shared = temp_path / "shared"
+            shared.mkdir()
+            (shared / "tool.sh").write_text("#!/bin/sh\necho tool\n")
+
+            composed_initrd = temp_path / "composed.cpio.gz"
+            composed_rootfs = temp_path / "composed-rootfs"
+
+            _build_composed_initrd(
+                base_initrd,
+                output_path=composed_initrd,
+                module_overlay=overlay_rootfs,
+                shared_dir=shared,
+            )
+            unpack_initrd(composed_initrd, composed_rootfs)
+
+            self.assertEqual(
+                (composed_rootfs / "lib" / "modules" / "5.10.0" / "modules.load").read_text(),
+                "virtio_blk\n",
+            )
+            self.assertEqual(
+                (composed_rootfs / "mnt" / "testvm-share" / "tool.sh").read_text(),
+                "#!/bin/sh\necho tool\n",
+            )
+            self.assertTrue((composed_rootfs / ".testvm" / "original-init").exists())
 
     def test_module_init_wrapper_is_valid_sh_syntax(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -667,7 +744,7 @@ class RunVmTests(unittest.TestCase):
             merged_initrd.write_bytes(b"merged")
 
             with mock.patch("testvm._qemu.build_default_initrd", return_value=base_initrd) as build_mock:
-                with mock.patch("testvm._qemu.build_merged_initrd", return_value=merged_initrd) as merge_mock:
+                with mock.patch("testvm._qemu._build_composed_initrd", return_value=merged_initrd) as merge_mock:
                     with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                         run_mock.return_value.returncode = 0
                         exit_code = run_vm(kernel=kernel, module_initrd=overlay_dir)
@@ -676,7 +753,7 @@ class RunVmTests(unittest.TestCase):
             build_mock.assert_called_once()
             merge_mock.assert_called_once()
             self.assertEqual(merge_mock.call_args.args[0], base_initrd)
-            self.assertEqual(merge_mock.call_args.args[1], overlay_dir)
+            self.assertEqual(merge_mock.call_args.kwargs["module_overlay"], overlay_dir)
             self.assertIn("merged-initrd.cpio.gz", str(merge_mock.call_args.kwargs["output_path"]))
             command = run_mock.call_args.args[0]
             self.assertIn(str(merged_initrd), command)
@@ -694,7 +771,7 @@ class RunVmTests(unittest.TestCase):
             merged_initrd.write_bytes(b"merged")
 
             with mock.patch("testvm._qemu.build_default_initrd") as build_mock:
-                with mock.patch("testvm._qemu.build_merged_initrd", return_value=merged_initrd) as merge_mock:
+                with mock.patch("testvm._qemu._build_composed_initrd", return_value=merged_initrd) as merge_mock:
                     with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                         run_mock.return_value.returncode = 0
                         exit_code = run_vm(
@@ -707,8 +784,9 @@ class RunVmTests(unittest.TestCase):
             build_mock.assert_not_called()
             merge_mock.assert_called_once_with(
                 base_initrd,
-                overlay_initrd,
                 output_path=mock.ANY,
+                module_overlay=overlay_initrd,
+                shared_dir=None,
             )
             command = run_mock.call_args.args[0]
             self.assertIn(str(merged_initrd), command)
@@ -744,6 +822,7 @@ class RunVmTests(unittest.TestCase):
                             exit_code = run_vm(
                                 kernel=kernel,
                                 share_dir=shared,
+                                share_mode=ShareMode.EXT4,
                                 sync_share_back=True,
                                 autorun="/mnt/testvm-share/run.sh",
                             )
@@ -758,11 +837,43 @@ class RunVmTests(unittest.TestCase):
             self.assertIn("testvm_share=1", " ".join(command))
             self.assertIn("testvm_autorun=/mnt/testvm-share/run.sh", " ".join(command))
 
+    def test_run_vm_initrd_share_mode_embeds_shared_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            kernel = temp_path / "vmlinux"
+            base_initrd = temp_path / "initrd.cpio.gz"
+            merged_initrd = temp_path / "merged-initrd.cpio.gz"
+            shared = temp_path / "shared"
+            shared.mkdir()
+            (shared / "tool.sh").write_text("#!/bin/sh\necho ok\n")
+            _make_elf(kernel, 62)
+            base_initrd.write_bytes(b"initrd")
+            merged_initrd.write_bytes(b"merged")
+
+            with mock.patch("testvm._qemu.build_default_initrd", return_value=base_initrd):
+                with mock.patch("testvm._qemu._build_composed_initrd", return_value=merged_initrd) as compose_mock:
+                    with mock.patch("testvm._qemu.subprocess.run") as run_mock:
+                        run_mock.return_value.returncode = 0
+                        exit_code = run_vm(kernel=kernel, share_dir=shared)
+
+            self.assertEqual(exit_code, 0)
+            compose_mock.assert_called_once_with(
+                base_initrd,
+                output_path=mock.ANY,
+                module_overlay=None,
+                shared_dir=shared,
+            )
+            command = run_mock.call_args.args[0]
+            self.assertNotIn("-drive", command)
+            self.assertNotIn("testvm_share=1", " ".join(command))
+            self.assertIn(str(merged_initrd), command)
+
     def test_run_vm_run_host_path_infers_share_dir(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             kernel = temp_path / "vmlinux"
             initrd = temp_path / "initrd.cpio.gz"
+            merged_initrd = temp_path / "merged-initrd.cpio.gz"
             shared = temp_path / "shared"
             shared.mkdir()
             host_program = shared / "bin" / "tool.sh"
@@ -770,25 +881,27 @@ class RunVmTests(unittest.TestCase):
             host_program.write_text("#!/bin/sh\necho ok\n")
             _make_elf(kernel, 62)
             initrd.write_bytes(b"initrd")
-
-            def fake_pack(source_dir: str | Path, output_path: str | Path, *, size: str | None = None) -> Path:
-                self.assertEqual(Path(source_dir), host_program.parent)
-                output = Path(output_path)
-                output.write_bytes(b"ext4")
-                return output
+            merged_initrd.write_bytes(b"merged")
 
             with mock.patch("testvm._qemu.build_default_initrd", return_value=initrd):
-                with mock.patch("testvm._qemu.pack_ext4_image", side_effect=fake_pack):
+                with mock.patch("testvm._qemu._build_composed_initrd", return_value=merged_initrd) as compose_mock:
                     with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                         run_mock.return_value.returncode = 0
                         exit_code = run_vm(kernel=kernel, run_host_path=host_program)
 
             self.assertEqual(exit_code, 0)
+            compose_mock.assert_called_once_with(
+                initrd,
+                output_path=mock.ANY,
+                module_overlay=None,
+                shared_dir=host_program.parent,
+            )
             command = run_mock.call_args.args[0]
             self.assertIn(
                 "testvm_autorun=/mnt/testvm-share/tool.sh",
                 " ".join(command),
             )
+            self.assertNotIn("testvm_share=1", " ".join(command))
 
     def test_run_vm_rejects_run_host_path_outside_share_dir(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -810,6 +923,17 @@ class RunVmTests(unittest.TestCase):
 
             with self.assertRaisesRegex(TestvmError, "requires --share-dir"):
                 run_vm(kernel=kernel, sync_share_back=True)
+
+    def test_run_vm_requires_ext4_share_mode_for_sync_back(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            kernel = temp_path / "vmlinux"
+            shared = temp_path / "shared"
+            shared.mkdir()
+            _make_elf(kernel, 62)
+
+            with self.assertRaisesRegex(TestvmError, "--share-mode ext4"):
+                run_vm(kernel=kernel, share_dir=shared, sync_share_back=True)
 
     def test_run_vm_rejects_whitespace_in_autorun_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
