@@ -16,6 +16,7 @@ Runtime dependencies:
 
 - `docker` with access to the Docker daemon
 - `git`
+- `libmagic` (typically provided by the `file` package)
 - `cpio`
 - `debugfs`
 - `gzip`
@@ -46,8 +47,9 @@ testvm ext4 pack ./shared ./shared.img
 testvm ext4 unpack ./shared.img ./shared-out
 testvm initrd build-default --arch x86_64
 testvm run ./vmlinux --gdb-port 1234 --append panic=-1
+testvm run ./vmlinux --nokaslr
 testvm initrd build-default --arch arm
-testvm run ./zImage --arch arm
+testvm run ./zImage
 testvm run ./vmlinux --module-initrd ./initrd_out
 testvm run ./vmlinux --initrd ./base.cpio.gz --module-initrd ./modules.cpio.gz
 testvm run ./vmlinux --share-dir ./shared --autorun /mnt/testvm-share/run.sh
@@ -55,7 +57,8 @@ testvm run ./vmlinux --share-dir ./shared --share-mode ext4 --sync-share-back
 testvm run ./vmlinux --run-host-path ./shared/run.sh
 ```
 
-`testvm run` auto-detects the kernel architecture from the ELF header when `--arch` is omitted. Raw ARM kernel images such as `zImage` require `--arch arm`. If `--initrd` is omitted, `testvm` reuses or builds a cached BusyBox initrd for the selected architecture.
+`testvm run` auto-detects the kernel architecture when `--arch` is omitted. ELF kernels are detected from the ELF header; raw kernel images such as ARM `zImage`, arm64 `Image`, and x86 `bzImage` fall back to `file(1)`/`libmagic`. If detection fails, pass `--arch` explicitly. If `--initrd` is omitted, `testvm` reuses or builds a cached BusyBox initrd for the selected architecture.
+Use `--nokaslr` to append `nokaslr` to the kernel command line without spelling it through `--append`.
 `testvm initrd unpack` accepts gzip-compressed, lz4-compressed, or plain `cpio` initrds.
 When `--module-initrd` is provided, `testvm` merges that packed initrd or unpacked rootfs onto the base initrd before boot and installs a small `/init` wrapper that reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before handing control to the original init. Packed base or overlay initrds may be gzip, lz4, or plain `cpio`.
 When `--share-dir` is provided, `testvm` shares that host directory at `/mnt/testvm-share`. The default `--share-mode initrd` embeds the files directly into the boot initrd, which avoids guest block-device discovery issues. `--share-mode ext4` preserves the previous virtio-block flow and is the only mode that supports `--sync-share-back`. `--run-host-path` is the convenience path for automatically running a host-side script or binary from that shared directory after init completes.
@@ -94,7 +97,6 @@ pack_ext4_image("shared", "shared.img")
 unpack_ext4_image("shared.img", "shared-out")
 run_vm(
     kernel="zImage",
-    arch="arm",
     initrd="merged.cpio.gz",
     gdb_port=1234,
     run_host_path="shared/run.sh",

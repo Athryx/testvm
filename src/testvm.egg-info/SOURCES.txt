@@ -4,6 +4,7 @@ src/testvm/__init__.py
 src/testvm/_arch.py
 src/testvm/_busybox.py
 src/testvm/_errors.py
+src/testvm/_ext4.py
 src/testvm/_initrd.py
 src/testvm/_paths.py
 src/testvm/_qemu.py

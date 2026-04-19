@@ -79,6 +79,7 @@ class CliTests(unittest.TestCase):
                         "1G",
                         "--append",
                         "panic=-1",
+                        "--nokaslr",
                         "--qemu-arg",
                         "-no-reboot",
                         "--module-initrd",
@@ -96,6 +97,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 7)
             run_mock.assert_called_once()
             self.assertEqual(run_mock.call_args.kwargs["module_initrd"], module_rootfs)
+            self.assertTrue(run_mock.call_args.kwargs["nokaslr"])
             self.assertEqual(run_mock.call_args.kwargs["share_mode"], "ext4")
 
     def test_run_command_accepts_arm_arch(self) -> None:

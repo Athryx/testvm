@@ -491,6 +491,53 @@ class DetectArchTests(unittest.TestCase):
             _make_elf(path, 183)
             self.assertEqual(detect_kernel_arch(path), "aarch64")
 
+    def test_detect_arm_zimage_from_file_description(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "zImage"
+            path.write_bytes(b"not-elf")
+
+            with mock.patch(
+                "testvm._arch._get_file_description",
+                return_value="Linux kernel ARM boot executable zImage (little-endian)",
+            ):
+                self.assertEqual(detect_kernel_arch(path), "arm")
+
+    def test_detect_aarch64_image_from_file_description(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "Image"
+            path.write_bytes(b"not-elf")
+
+            with mock.patch(
+                "testvm._arch._get_file_description",
+                return_value="Linux kernel ARM64 boot executable Image, little-endian",
+            ):
+                self.assertEqual(detect_kernel_arch(path), "aarch64")
+
+    def test_detect_x86_bzimage_from_file_description(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bzImage"
+            path.write_bytes(b"not-elf")
+
+            with mock.patch(
+                "testvm._arch._get_file_description",
+                return_value="Linux kernel x86 boot executable bzImage, version 6.1.0",
+            ):
+                self.assertEqual(detect_kernel_arch(path), "x86_64")
+
+    def test_detect_non_elf_requires_file_or_explicit_arch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "zImage"
+            path.write_bytes(b"not-elf")
+
+            with mock.patch(
+                "testvm._arch._get_file_description",
+                side_effect=TestvmError(
+                    "the file command is unavailable; install file/libmagic or pass --arch explicitly"
+                ),
+            ):
+                with self.assertRaisesRegex(TestvmError, "pass --arch explicitly"):
+                    detect_kernel_arch(path)
+
 
 class BusyBoxBuildTests(unittest.TestCase):
     def test_build_default_initrd_reuses_cached_artifact(self) -> None:
@@ -670,13 +717,14 @@ class RunVmTests(unittest.TestCase):
             memory="1G",
             smp=2,
             append=["panic=-1"],
+            nokaslr=True,
             qemu_arg=["-no-reboot"],
         )
         self.assertIn("qemu-system-x86_64", command[0])
         self.assertIn("-initrd", command)
         self.assertIn("tcp::1234", command)
         self.assertEqual(command[-1], "-no-reboot")
-        self.assertIn("console=ttyS0 rdinit=/init panic=-1", command)
+        self.assertIn("console=ttyS0 rdinit=/init nokaslr panic=-1", command)
 
     def test_build_qemu_command_adds_share_drive_and_autorun(self) -> None:
         command = _build_qemu_command(
@@ -687,6 +735,7 @@ class RunVmTests(unittest.TestCase):
             memory="1G",
             smp=2,
             append=[],
+            nokaslr=False,
             qemu_arg=[],
             share_image=Path("/tmp/share.img"),
             autorun="/mnt/testvm-share/run.sh",
@@ -707,12 +756,30 @@ class RunVmTests(unittest.TestCase):
             memory="256M",
             smp=1,
             append=["panic=-1"],
+            nokaslr=False,
             qemu_arg=[],
         )
         self.assertIn("qemu-system-arm", command[0])
         self.assertIn("virt", command)
         self.assertIn("cortex-a15", command)
         self.assertIn("console=ttyAMA0 rdinit=/init panic=-1", command)
+
+    def test_run_vm_adds_nokaslr_to_kernel_command_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            kernel = temp_path / "vmlinux"
+            initrd = temp_path / "initrd.cpio.gz"
+            _make_elf(kernel, 62)
+            initrd.write_bytes(b"initrd")
+
+            with mock.patch("testvm._qemu.build_default_initrd", return_value=initrd):
+                with mock.patch("testvm._qemu.subprocess.run") as run_mock:
+                    run_mock.return_value.returncode = 0
+                    exit_code = run_vm(kernel=kernel, nokaslr=True)
+
+            self.assertEqual(exit_code, 0)
+            command = run_mock.call_args.args[0]
+            self.assertIn("nokaslr", " ".join(command))
 
     def test_run_vm_autobuilds_initrd_for_detected_arch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -958,7 +1025,6 @@ class RunVmTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             build_mock.assert_called_once_with(
                 arch=Architecture.ARM,
-                workdir=None,
                 force_rebuild=False,
             )
             run_mock.assert_called_once()
@@ -978,7 +1044,26 @@ class RunVmTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             build_mock.assert_called_once_with(
                 arch=Architecture.ARM,
-                workdir=None,
+                force_rebuild=False,
+            )
+            run_mock.assert_called_once()
+
+    def test_run_vm_autodetects_raw_arm_kernel(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kernel = Path(temp_dir) / "zImage"
+            initrd = Path(temp_dir) / "initrd.cpio.gz"
+            kernel.write_bytes(b"not-elf")
+            initrd.write_bytes(b"initrd")
+
+            with mock.patch("testvm._qemu.detect_kernel_arch", return_value=Architecture.ARM):
+                with mock.patch("testvm._qemu.build_default_initrd", return_value=initrd) as build_mock:
+                    with mock.patch("testvm._qemu.subprocess.run") as run_mock:
+                        run_mock.return_value.returncode = 0
+                        exit_code = run_vm(kernel=kernel)
+
+            self.assertEqual(exit_code, 0)
+            build_mock.assert_called_once_with(
+                arch=Architecture.ARM,
                 force_rebuild=False,
             )
             run_mock.assert_called_once()

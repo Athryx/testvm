@@ -104,6 +104,7 @@ def _build_qemu_command(
     memory: str,
     smp: int,
     append: Iterable[str],
+    nokaslr: bool,
     qemu_arg: Iterable[str],
     share_image: Path | None = None,
     autorun: str | None = None,
@@ -177,6 +178,8 @@ def _build_qemu_command(
         cmdline.append("testvm_share=1")
     if autorun is not None:
         cmdline.append(f"testvm_autorun={_validate_autorun_path(autorun)}")
+    if nokaslr:
+        cmdline.append("nokaslr")
 
     cmdline.extend(str(item) for item in append)
     command.extend(["-append", " ".join(cmdline)])
@@ -193,9 +196,9 @@ def run_vm(
     memory: str = "512M",
     smp: int = 1,
     append: Iterable[str] = (),
+    nokaslr: bool = False,
     qemu_arg: Iterable[str] = (),
     module_initrd: str | Path | None = None,
-    workdir: str | Path | None = None,
     share_dir: str | Path | None = None,
     share_mode: str | ShareMode = ShareMode.INITRD,
     sync_share_back: bool = False,
@@ -229,7 +232,6 @@ def run_vm(
     else:
         initrd_path = build_default_initrd(
             arch=normalized_arch,
-            workdir=workdir,
             force_rebuild=force_rebuild_initrd,
         )
 
@@ -264,6 +266,7 @@ def run_vm(
             memory=memory,
             smp=smp,
             append=append,
+            nokaslr=nokaslr,
             qemu_arg=qemu_arg,
             share_image=share_image,
             autorun=resolved_autorun,

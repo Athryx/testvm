@@ -13,6 +13,7 @@ Before running commands that touch the host toolchain, assume these external too
 
 - `cpio`
 - `debugfs`
+- `file` with libmagic support
 - `gzip`
 - `git`
 - `docker` with daemon access
@@ -200,7 +201,7 @@ testvm ext4 unpack ./shared.img ./shared-out
 Syntax:
 
 ```bash
-testvm run KERNEL [--arch ARCH] [--initrd PATH] [--workdir PATH] [--gdb-port PORT] [--memory SIZE] [--smp N] [--append ARG]... [--qemu-arg ARG]... [--module-initrd PATH] [--share-dir PATH] [--share-mode {initrd,ext4}] [--sync-share-back] [--autorun GUEST_PATH] [--run-host-path HOST_PATH] [--force-rebuild-initrd]
+testvm run KERNEL [--arch ARCH] [--initrd PATH] [--gdb-port PORT] [--memory SIZE] [--smp N] [--append ARG]... [--nokaslr] [--qemu-arg ARG]... [--module-initrd PATH] [--share-dir PATH] [--share-mode {initrd,ext4}] [--sync-share-back] [--autorun GUEST_PATH] [--run-host-path HOST_PATH] [--force-rebuild-initrd]
 ```
 
 Options:
@@ -208,11 +209,11 @@ Options:
 - `KERNEL`: required kernel image path
 - `--arch`: overrides architecture detection
 - `--initrd`: initrd to boot; if omitted, `testvm` auto-reuses or builds the default BusyBox initrd for the selected architecture
-- `--workdir`: BusyBox work directory used when auto-building an initrd
 - `--gdb-port`: enables the QEMU gdb stub and starts QEMU halted with `-S -gdb tcp::<port>`
 - `--memory`: guest RAM size, default `512M`
 - `--smp`: guest vCPU count, default `1`
 - `--append`: additional kernel command line arguments; repeat this flag for multiple values
+- `--nokaslr`: appends `nokaslr` to the kernel command line
 - `--qemu-arg`: additional raw QEMU arguments; repeat this flag for multiple values
 - `--module-initrd`: packed initrd file or unpacked rootfs directory to merge onto the base initrd before boot
 - `--share-dir`: host directory to expose in the guest at `/mnt/testvm-share`
@@ -225,9 +226,10 @@ Options:
 Behavior:
 
 - Validates that the kernel path exists
-- If `--arch` is omitted, auto-detects the architecture from the ELF header
-- Raw non-ELF kernels cannot be auto-detected; for example, `zImage` requires `--arch arm`
+- If `--arch` is omitted, auto-detects the architecture from the ELF header for ELF kernels
+- Raw kernel images such as `zImage`, `Image`, and `bzImage` fall back to `file(1)`/libmagic-based detection when possible
 - If `--initrd` is omitted, calls `testvm initrd build-default` logic internally
+- Auto-built initrds always use the default BusyBox work/cache location; `testvm run` no longer exposes a workdir override
 - If `--module-initrd` is set, `testvm` merges that overlay onto the base initrd before launching QEMU
 - The module-loading wrapper reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before the original init runs
 - If `--share-dir` is used with the default `--share-mode initrd`, `testvm` copies that directory into the boot initrd at `/mnt/testvm-share`
@@ -252,9 +254,10 @@ Examples:
 ```bash
 testvm run ./vmlinux
 testvm run ./vmlinux --gdb-port 1234 --append panic=-1
+testvm run ./vmlinux --nokaslr
 testvm run ./vmlinux --memory 1G --smp 2 --qemu-arg -no-reboot
-testvm run ./zImage --arch arm
-testvm run ./Image --arch aarch64 --initrd ./initrd.cpio.gz
+testvm run ./zImage
+testvm run ./Image --initrd ./initrd.cpio.gz
 testvm run ./vmlinux --module-initrd ./initrd_out
 testvm run ./vmlinux --initrd ./base.cpio.gz --module-initrd ./modules.cpio.gz
 testvm run ./vmlinux --share-dir ./shared --autorun /mnt/testvm-share/run.sh
@@ -266,11 +269,12 @@ testvm run ./vmlinux --run-host-path ./shared/run.sh
 
 Use these defaults unless the user asks for something else:
 
-- Prefer omitting `--arch` for ELF kernels so `testvm` auto-detects the right target
-- Add `--arch arm` for raw ARM images such as `zImage`
+- Prefer omitting `--arch` for ELF kernels and common raw kernel images so `testvm` can auto-detect the target
+- Add `--arch` only when detection fails or the kernel format is unusual
 - Omit `--initrd` unless the user already has a custom initrd
 - Use `--module-initrd` when the user has a module/config overlay initrd or unpacked module tree
 - Use `--gdb-port 1234` when the user wants to attach GDB before boot
+- Use `--nokaslr` when the user explicitly wants kernel address randomization disabled
 - Use repeated `--append` flags for separate kernel args
 - Use repeated `--qemu-arg` flags for raw QEMU passthrough arguments
 - Prefer `--run-host-path` for quick "run this script/binary inside the guest" requests
@@ -280,7 +284,7 @@ Use these defaults unless the user asks for something else:
 Examples:
 
 ```bash
-testvm run ./vmlinux --append panic=-1 --append nokaslr
+testvm run ./vmlinux --append panic=-1 --nokaslr
 testvm run ./vmlinux --qemu-arg -no-reboot --qemu-arg -d --qemu-arg int
 ```
 
@@ -297,6 +301,7 @@ Common failure cases:
 - Trying to unpack into a non-empty directory
 - Missing host tools such as `docker`, `cpio`, `gzip`, `mkfs.ext4`, `debugfs`, or QEMU
 - Docker daemon permission errors
-- Supplying a non-ELF kernel without `--arch`
+- `file(1)` is unavailable and a non-ELF kernel needs autodetection
+- `file(1)` cannot classify a raw kernel image well enough to infer the architecture
 
 For successful `testvm run`, the CLI exits with the same code returned by QEMU.

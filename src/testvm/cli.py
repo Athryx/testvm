@@ -111,11 +111,10 @@ def build_default_command(
 def run_command(
     vmlinux: Annotated[
         Path,
-        typer.Argument(help="Kernel image to boot. Non-ELF images require --arch."),
+        typer.Argument(help="Kernel image to boot. Architecture is auto-detected when possible."),
     ],
     arch: Annotated[Architecture | None, typer.Option(help="Override detected architecture.")] = None,
     initrd: Annotated[Path | None, typer.Option(help="Initrd path to boot with.")] = None,
-    workdir: Annotated[Path | None, typer.Option(help="BusyBox work directory.")] = None,
     gdb_port: Annotated[int | None, typer.Option(help="Enable QEMU gdb stub on this TCP port.")] = None,
     memory: Annotated[str, typer.Option(help="Guest memory size.")] = "512M",
     smp: Annotated[int, typer.Option(help="Guest vCPU count.")] = 1,
@@ -123,6 +122,10 @@ def run_command(
         list[str] | None,
         typer.Option(help="Additional kernel command line arguments. Repeatable."),
     ] = None,
+    nokaslr: Annotated[
+        bool,
+        typer.Option("--nokaslr", help="Append nokaslr to the kernel command line."),
+    ] = False,
     qemu_arg: Annotated[
         list[str] | None,
         typer.Option(help="Additional raw QEMU arguments. Repeatable."),
@@ -171,9 +174,9 @@ def run_command(
             memory=memory,
             smp=smp,
             append=append or (),
+            nokaslr=nokaslr,
             qemu_arg=qemu_arg or (),
             module_initrd=module_initrd,
-            workdir=workdir,
             share_dir=share_dir,
             share_mode=share_mode,
             sync_share_back=sync_share_back,
