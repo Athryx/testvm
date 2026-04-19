@@ -201,7 +201,7 @@ testvm ext4 unpack ./shared.img ./shared-out
 Syntax:
 
 ```bash
-testvm run KERNEL [--arch ARCH] [--initrd PATH] [--gdb-port PORT] [--memory SIZE] [--smp N] [--append ARG]... [--nokaslr] [--qemu-arg ARG]... [--module-initrd PATH] [--share-dir PATH] [--share-mode {initrd,ext4}] [--sync-share-back] [--autorun GUEST_PATH] [--run-host-path HOST_PATH] [--force-rebuild-initrd]
+testvm run KERNEL [--arch ARCH] [--initrd PATH] [--gdb-port PORT] [--memory SIZE] [--smp N] [--append ARG]... [--nokaslr] [--qemu-arg ARG]... [--module-initrd PATH] [--share-dir PATH] [--share-mode {initrd,ext4}] [--sync-share-back] [--autorun-vm-path GUEST_PATH] [--autorun HOST_PATH] [--force-rebuild-initrd]
 ```
 
 Options:
@@ -219,8 +219,8 @@ Options:
 - `--share-dir`: host directory to expose in the guest at `/mnt/testvm-share`
 - `--share-mode`: sharing transport; `initrd` is the default and `ext4` preserves the virtio-block flow
 - `--sync-share-back`: extracts the shared ext4 image back into the host directory after QEMU exits; requires `--share-mode ext4`
-- `--autorun`: absolute guest path to execute after init completes
-- `--run-host-path`: convenience flag that infers a share from the host file's parent and autoruns it in the guest
+- `--autorun-vm-path`: absolute guest path to execute after init completes
+- `--autorun`: convenience flag that infers a share from the host file's parent and autoruns it in the guest
 - `--force-rebuild-initrd`: forces a rebuild of the auto-generated initrd
 
 Behavior:
@@ -234,7 +234,7 @@ Behavior:
 - The module-loading wrapper reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before the original init runs
 - If `--share-dir` is used with the default `--share-mode initrd`, `testvm` copies that directory into the boot initrd at `/mnt/testvm-share`
 - If `--share-dir` is used with `--share-mode ext4`, `testvm` creates a temporary ext4 image and adds it to QEMU as a virtio block drive
-- If `--run-host-path` is used without `--share-dir`, the shared directory defaults to the file's parent directory
+- If `--autorun` is used without `--share-dir`, the shared directory defaults to the file's parent directory
 - The default BusyBox init script mounts ext4-backed shares when requested and drops to a shell after any autorun program exits
 - Returns QEMU's exit code directly
 
@@ -260,9 +260,9 @@ testvm run ./zImage
 testvm run ./Image --initrd ./initrd.cpio.gz
 testvm run ./vmlinux --module-initrd ./initrd_out
 testvm run ./vmlinux --initrd ./base.cpio.gz --module-initrd ./modules.cpio.gz
-testvm run ./vmlinux --share-dir ./shared --autorun /mnt/testvm-share/run.sh
+testvm run ./vmlinux --share-dir ./shared --autorun-vm-path /mnt/testvm-share/run.sh
 testvm run ./vmlinux --share-dir ./shared --share-mode ext4 --sync-share-back
-testvm run ./vmlinux --run-host-path ./shared/run.sh
+testvm run ./vmlinux --autorun ./shared/run.sh
 ```
 
 ## Agent Guidance
@@ -277,7 +277,7 @@ Use these defaults unless the user asks for something else:
 - Use `--nokaslr` when the user explicitly wants kernel address randomization disabled
 - Use repeated `--append` flags for separate kernel args
 - Use repeated `--qemu-arg` flags for raw QEMU passthrough arguments
-- Prefer `--run-host-path` for quick "run this script/binary inside the guest" requests
+- Prefer `--autorun` for quick "run this script/binary inside the guest" requests
 - Prefer the default `--share-mode initrd` unless the user specifically needs ext4 behavior or host sync-back
 - Add `--sync-share-back` only when the user explicitly wants guest-side changes copied back to the host folder; pair it with `--share-mode ext4`
 

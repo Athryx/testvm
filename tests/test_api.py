@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from testvm import CommandExecutionError, DATA_DIR_ENV_VAR, ShareMode, TestvmError
+from testvm import DATA_DIR_ENV_VAR, CommandExecutionError, ShareMode, TestvmError
 from testvm._arch import Architecture, detect_kernel_arch, normalize_arch
 from testvm._busybox import (
     DEFAULT_BUSYBOX_REF,
@@ -80,7 +80,9 @@ class InitrdTests(unittest.TestCase):
             unpack_initrd(initrd, unpacked)
 
             self.assertEqual((unpacked / "config.txt").read_text(), "value=1\n")
-            self.assertEqual((unpacked / "subdir" / "nested.txt").read_text(), "nested\n")
+            self.assertEqual(
+                (unpacked / "subdir" / "nested.txt").read_text(), "nested\n"
+            )
             self.assertTrue((unpacked / "hello-link").is_symlink())
             self.assertEqual(os.readlink(unpacked / "hello-link"), "hello.sh")
             mode = stat.S_IMODE((unpacked / "hello.sh").stat().st_mode)
@@ -125,7 +127,9 @@ class InitrdTests(unittest.TestCase):
 
             unpack_initrd(lz4_initrd, unpacked)
 
-            self.assertEqual((unpacked / "hello.sh").read_text(), "#!/bin/sh\necho hi\n")
+            self.assertEqual(
+                (unpacked / "hello.sh").read_text(), "#!/bin/sh\necho hi\n"
+            )
             mode = stat.S_IMODE((unpacked / "hello.sh").stat().st_mode)
             self.assertEqual(mode, 0o755)
 
@@ -172,7 +176,9 @@ class InitrdTests(unittest.TestCase):
             build_merged_initrd(base_initrd, overlay_rootfs, output_path=merged_initrd)
             unpack_initrd(merged_initrd, merged_rootfs)
 
-            self.assertEqual((merged_rootfs / "etc" / "base.conf").read_text(), "base=1\n")
+            self.assertEqual(
+                (merged_rootfs / "etc" / "base.conf").read_text(), "base=1\n"
+            )
             self.assertEqual(
                 (merged_rootfs / "etc" / "overlay.conf").read_text(),
                 "overlay=1\n",
@@ -187,7 +193,9 @@ class InitrdTests(unittest.TestCase):
                 (merged_rootfs / "init").read_text(),
             )
             self.assertEqual(
-                (merged_rootfs / "lib" / "modules" / "5.10.0" / "modules.load").read_text(),
+                (
+                    merged_rootfs / "lib" / "modules" / "5.10.0" / "modules.load"
+                ).read_text(),
                 "# comment\nkernel/drivers/block/virtio_blk.ko\nvirtio_rng\n",
             )
 
@@ -219,7 +227,9 @@ class InitrdTests(unittest.TestCase):
             unpack_initrd(merged_initrd, merged_rootfs)
 
             self.assertEqual(
-                (merged_rootfs / "lib" / "modules" / "5.10.0" / "modules.load").read_text(),
+                (
+                    merged_rootfs / "lib" / "modules" / "5.10.0" / "modules.load"
+                ).read_text(),
                 "virtio_blk\n",
             )
             self.assertTrue((merged_rootfs / ".testvm" / "original-init").exists())
@@ -269,13 +279,17 @@ class InitrdTests(unittest.TestCase):
             build_merged_initrd(base_lz4, overlay_lz4, output_path=merged_initrd)
             unpack_initrd(merged_initrd, merged_rootfs)
 
-            self.assertEqual((merged_rootfs / "etc" / "base.conf").read_text(), "base=1\n")
+            self.assertEqual(
+                (merged_rootfs / "etc" / "base.conf").read_text(), "base=1\n"
+            )
             self.assertEqual(
                 (merged_rootfs / "etc" / "overlay.conf").read_text(),
                 "overlay=1\n",
             )
             self.assertEqual(
-                (merged_rootfs / "lib" / "modules" / "5.10.0" / "modules.load").read_text(),
+                (
+                    merged_rootfs / "lib" / "modules" / "5.10.0" / "modules.load"
+                ).read_text(),
                 "virtio_blk\n",
             )
 
@@ -363,7 +377,9 @@ class InitrdTests(unittest.TestCase):
             unpack_initrd(composed_initrd, composed_rootfs)
 
             self.assertEqual(
-                (composed_rootfs / "lib" / "modules" / "5.10.0" / "modules.load").read_text(),
+                (
+                    composed_rootfs / "lib" / "modules" / "5.10.0" / "modules.load"
+                ).read_text(),
                 "virtio_blk\n",
             )
             self.assertEqual(
@@ -434,7 +450,9 @@ class Ext4Tests(unittest.TestCase):
             unpack_ext4_image(image, unpacked)
 
             self.assertEqual((unpacked / "config.txt").read_text(), "value=1\n")
-            self.assertEqual((unpacked / "subdir" / "nested.txt").read_text(), "nested\n")
+            self.assertEqual(
+                (unpacked / "subdir" / "nested.txt").read_text(), "nested\n"
+            )
             self.assertTrue((unpacked / "hello-link").is_symlink())
             self.assertEqual(os.readlink(unpacked / "hello-link"), "hello.sh")
             mode = stat.S_IMODE((unpacked / "hello.sh").stat().st_mode)
@@ -555,7 +573,9 @@ class BusyBoxBuildTests(unittest.TestCase):
             cached.write_bytes(b"cached")
             output = temp_path / "out" / "initrd.cpio.gz"
 
-            with mock.patch("testvm._busybox.get_data_dir", return_value=temp_path / "cache"):
+            with mock.patch(
+                "testvm._busybox.get_data_dir", return_value=temp_path / "cache"
+            ):
                 path = build_default_initrd(arch="x86_64", output_path=output)
 
             self.assertEqual(path, output)
@@ -573,16 +593,27 @@ class BusyBoxBuildTests(unittest.TestCase):
             def fake_docker(command: list[str]) -> None:
                 commands.append(command)
 
-            def fake_pack(rootfs_dir: str | Path, output_path: str | Path, *, compress: bool = True) -> Path:
+            def fake_pack(
+                rootfs_dir: str | Path,
+                output_path: str | Path,
+                *,
+                compress: bool = True,
+            ) -> Path:
                 output = Path(output_path)
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(b"initrd")
                 return output
 
             with mock.patch("testvm._busybox.get_data_dir", return_value=data_dir):
-                with mock.patch("testvm._busybox._ensure_busybox_source") as source_mock:
-                    with mock.patch("testvm._busybox._run_docker_checked", side_effect=fake_docker):
-                        with mock.patch("testvm._busybox.pack_initrd", side_effect=fake_pack):
+                with mock.patch(
+                    "testvm._busybox._ensure_busybox_source"
+                ) as source_mock:
+                    with mock.patch(
+                        "testvm._busybox._run_docker_checked", side_effect=fake_docker
+                    ):
+                        with mock.patch(
+                            "testvm._busybox.pack_initrd", side_effect=fake_pack
+                        ):
                             path = build_default_initrd(
                                 arch="x86_64",
                                 workdir=workdir,
@@ -593,7 +624,9 @@ class BusyBoxBuildTests(unittest.TestCase):
             self.assertEqual(len(commands), 2)
 
             build_cmd, run_cmd = commands
-            self.assertEqual(build_cmd[:4], ["docker", "build", "--tag", DOCKER_IMAGE_TAG])
+            self.assertEqual(
+                build_cmd[:4], ["docker", "build", "--tag", DOCKER_IMAGE_TAG]
+            )
             self.assertEqual(run_cmd[:3], ["docker", "run", "--rm"])
             self.assertIn(DOCKER_IMAGE_TAG, run_cmd)
             self.assertIn("silentoldconfig", run_cmd[-1])
@@ -604,12 +637,24 @@ class BusyBoxBuildTests(unittest.TestCase):
             self.assertIn("CONFIG_INSMOD=y", run_cmd[-1])
             self.assertIn("# CONFIG_MODPROBE_SMALL is not set", run_cmd[-1])
 
-            build_mount = next(item for item in run_cmd if f"dst={DOCKER_BUILD_DIR}" in item)
-            rootfs_mount = next(item for item in run_cmd if f"dst={DOCKER_ROOTFS_DIR}" in item)
-            source_mount = next(item for item in run_cmd if f"dst={DOCKER_SOURCE_DIR}" in item)
+            build_mount = next(
+                item for item in run_cmd if f"dst={DOCKER_BUILD_DIR}" in item
+            )
+            rootfs_mount = next(
+                item for item in run_cmd if f"dst={DOCKER_ROOTFS_DIR}" in item
+            )
+            source_mount = next(
+                item for item in run_cmd if f"dst={DOCKER_SOURCE_DIR}" in item
+            )
             self.assertIn(f"src={source_dir}", source_mount)
-            self.assertIn(f"src={workdir / 'busybox-build' / 'x86_64' / DEFAULT_BUSYBOX_REF}", build_mount)
-            self.assertIn(f"src={workdir / 'busybox-rootfs' / 'x86_64' / DEFAULT_BUSYBOX_REF}", rootfs_mount)
+            self.assertIn(
+                f"src={workdir / 'busybox-build' / 'x86_64' / DEFAULT_BUSYBOX_REF}",
+                build_mount,
+            )
+            self.assertIn(
+                f"src={workdir / 'busybox-rootfs' / 'x86_64' / DEFAULT_BUSYBOX_REF}",
+                rootfs_mount,
+            )
 
     def test_build_default_initrd_uses_arm_cross_compile_vars(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -623,7 +668,12 @@ class BusyBoxBuildTests(unittest.TestCase):
             def fake_docker(command: list[str]) -> None:
                 commands.append(command)
 
-            def fake_pack(rootfs_dir: str | Path, output_path: str | Path, *, compress: bool = True) -> Path:
+            def fake_pack(
+                rootfs_dir: str | Path,
+                output_path: str | Path,
+                *,
+                compress: bool = True,
+            ) -> Path:
                 output = Path(output_path)
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(b"arm-initrd")
@@ -631,8 +681,12 @@ class BusyBoxBuildTests(unittest.TestCase):
 
             with mock.patch("testvm._busybox.get_data_dir", return_value=data_dir):
                 with mock.patch("testvm._busybox._ensure_busybox_source"):
-                    with mock.patch("testvm._busybox._run_docker_checked", side_effect=fake_docker):
-                        with mock.patch("testvm._busybox.pack_initrd", side_effect=fake_pack):
+                    with mock.patch(
+                        "testvm._busybox._run_docker_checked", side_effect=fake_docker
+                    ):
+                        with mock.patch(
+                            "testvm._busybox.pack_initrd", side_effect=fake_pack
+                        ):
                             path = build_default_initrd(
                                 arch="arm",
                                 workdir=workdir,
@@ -662,7 +716,12 @@ class BusyBoxBuildTests(unittest.TestCase):
             def fake_docker(command: list[str]) -> None:
                 commands.append(command)
 
-            def fake_pack(rootfs_dir: str | Path, output_path: str | Path, *, compress: bool = True) -> Path:
+            def fake_pack(
+                rootfs_dir: str | Path,
+                output_path: str | Path,
+                *,
+                compress: bool = True,
+            ) -> Path:
                 output = Path(output_path)
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(b"aarch64-initrd")
@@ -670,8 +729,12 @@ class BusyBoxBuildTests(unittest.TestCase):
 
             with mock.patch("testvm._busybox.get_data_dir", return_value=data_dir):
                 with mock.patch("testvm._busybox._ensure_busybox_source"):
-                    with mock.patch("testvm._busybox._run_docker_checked", side_effect=fake_docker):
-                        with mock.patch("testvm._busybox.pack_initrd", side_effect=fake_pack):
+                    with mock.patch(
+                        "testvm._busybox._run_docker_checked", side_effect=fake_docker
+                    ):
+                        with mock.patch(
+                            "testvm._busybox.pack_initrd", side_effect=fake_pack
+                        ):
                             path = build_default_initrd(
                                 arch="aarch64",
                                 workdir=workdir,
@@ -789,7 +852,9 @@ class RunVmTests(unittest.TestCase):
             _make_elf(kernel, 62)
             initrd.write_bytes(b"initrd")
 
-            with mock.patch("testvm._qemu.build_default_initrd", return_value=initrd) as build_mock:
+            with mock.patch(
+                "testvm._qemu.build_default_initrd", return_value=initrd
+            ) as build_mock:
                 with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                     run_mock.return_value.returncode = 0
                     exit_code = run_vm(kernel=kernel)
@@ -810,8 +875,12 @@ class RunVmTests(unittest.TestCase):
             base_initrd.write_bytes(b"base")
             merged_initrd.write_bytes(b"merged")
 
-            with mock.patch("testvm._qemu.build_default_initrd", return_value=base_initrd) as build_mock:
-                with mock.patch("testvm._qemu._build_composed_initrd", return_value=merged_initrd) as merge_mock:
+            with mock.patch(
+                "testvm._qemu.build_default_initrd", return_value=base_initrd
+            ) as build_mock:
+                with mock.patch(
+                    "testvm._qemu._build_composed_initrd", return_value=merged_initrd
+                ) as merge_mock:
                     with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                         run_mock.return_value.returncode = 0
                         exit_code = run_vm(kernel=kernel, module_initrd=overlay_dir)
@@ -821,7 +890,9 @@ class RunVmTests(unittest.TestCase):
             merge_mock.assert_called_once()
             self.assertEqual(merge_mock.call_args.args[0], base_initrd)
             self.assertEqual(merge_mock.call_args.kwargs["module_overlay"], overlay_dir)
-            self.assertIn("merged-initrd.cpio.gz", str(merge_mock.call_args.kwargs["output_path"]))
+            self.assertIn(
+                "merged-initrd.cpio.gz", str(merge_mock.call_args.kwargs["output_path"])
+            )
             command = run_mock.call_args.args[0]
             self.assertIn(str(merged_initrd), command)
 
@@ -838,7 +909,9 @@ class RunVmTests(unittest.TestCase):
             merged_initrd.write_bytes(b"merged")
 
             with mock.patch("testvm._qemu.build_default_initrd") as build_mock:
-                with mock.patch("testvm._qemu._build_composed_initrd", return_value=merged_initrd) as merge_mock:
+                with mock.patch(
+                    "testvm._qemu._build_composed_initrd", return_value=merged_initrd
+                ) as merge_mock:
                     with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                         run_mock.return_value.returncode = 0
                         exit_code = run_vm(
@@ -869,7 +942,12 @@ class RunVmTests(unittest.TestCase):
             _make_elf(kernel, 62)
             initrd.write_bytes(b"initrd")
 
-            def fake_pack(source_dir: str | Path, output_path: str | Path, *, size: str | None = None) -> Path:
+            def fake_pack(
+                source_dir: str | Path,
+                output_path: str | Path,
+                *,
+                size: str | None = None,
+            ) -> Path:
                 self.assertEqual(Path(source_dir), shared)
                 output = Path(output_path)
                 output.write_bytes(b"ext4")
@@ -882,8 +960,12 @@ class RunVmTests(unittest.TestCase):
                 return output
 
             with mock.patch("testvm._qemu.build_default_initrd", return_value=initrd):
-                with mock.patch("testvm._qemu.pack_ext4_image", side_effect=fake_pack) as pack_mock:
-                    with mock.patch("testvm._qemu.unpack_ext4_image", side_effect=fake_unpack) as unpack_mock:
+                with mock.patch(
+                    "testvm._qemu.pack_ext4_image", side_effect=fake_pack
+                ) as pack_mock:
+                    with mock.patch(
+                        "testvm._qemu.unpack_ext4_image", side_effect=fake_unpack
+                    ) as unpack_mock:
                         with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                             run_mock.return_value.returncode = 0
                             exit_code = run_vm(
@@ -891,7 +973,7 @@ class RunVmTests(unittest.TestCase):
                                 share_dir=shared,
                                 share_mode=ShareMode.EXT4,
                                 sync_share_back=True,
-                                autorun="/mnt/testvm-share/run.sh",
+                                autorun_vm_path="/mnt/testvm-share/run.sh",
                             )
 
             self.assertEqual(exit_code, 0)
@@ -917,8 +999,12 @@ class RunVmTests(unittest.TestCase):
             base_initrd.write_bytes(b"initrd")
             merged_initrd.write_bytes(b"merged")
 
-            with mock.patch("testvm._qemu.build_default_initrd", return_value=base_initrd):
-                with mock.patch("testvm._qemu._build_composed_initrd", return_value=merged_initrd) as compose_mock:
+            with mock.patch(
+                "testvm._qemu.build_default_initrd", return_value=base_initrd
+            ):
+                with mock.patch(
+                    "testvm._qemu._build_composed_initrd", return_value=merged_initrd
+                ) as compose_mock:
                     with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                         run_mock.return_value.returncode = 0
                         exit_code = run_vm(kernel=kernel, share_dir=shared)
@@ -951,10 +1037,12 @@ class RunVmTests(unittest.TestCase):
             merged_initrd.write_bytes(b"merged")
 
             with mock.patch("testvm._qemu.build_default_initrd", return_value=initrd):
-                with mock.patch("testvm._qemu._build_composed_initrd", return_value=merged_initrd) as compose_mock:
+                with mock.patch(
+                    "testvm._qemu._build_composed_initrd", return_value=merged_initrd
+                ) as compose_mock:
                     with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                         run_mock.return_value.returncode = 0
-                        exit_code = run_vm(kernel=kernel, run_host_path=host_program)
+                        exit_code = run_vm(kernel=kernel, autorun_path=host_program)
 
             self.assertEqual(exit_code, 0)
             compose_mock.assert_called_once_with(
@@ -981,7 +1069,7 @@ class RunVmTests(unittest.TestCase):
             _make_elf(kernel, 62)
 
             with self.assertRaisesRegex(TestvmError, "inside the shared directory"):
-                run_vm(kernel=kernel, share_dir=shared, run_host_path=outsider)
+                run_vm(kernel=kernel, share_dir=shared, autorun_path=outsider)
 
     def test_run_vm_requires_share_for_sync_back(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1008,7 +1096,7 @@ class RunVmTests(unittest.TestCase):
             _make_elf(kernel, 62)
 
             with self.assertRaisesRegex(TestvmError, "may not contain whitespace"):
-                run_vm(kernel=kernel, autorun="/mnt/testvm-share/run me")
+                run_vm(kernel=kernel, autorun_vm_path="/mnt/testvm-share/run me")
 
     def test_run_vm_autobuilds_initrd_for_arm_on_x86_host(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1017,7 +1105,9 @@ class RunVmTests(unittest.TestCase):
             _make_elf(kernel, 40)
             initrd.write_bytes(b"initrd")
 
-            with mock.patch("testvm._qemu.build_default_initrd", return_value=initrd) as build_mock:
+            with mock.patch(
+                "testvm._qemu.build_default_initrd", return_value=initrd
+            ) as build_mock:
                 with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                     run_mock.return_value.returncode = 0
                     exit_code = run_vm(kernel=kernel)
@@ -1036,7 +1126,9 @@ class RunVmTests(unittest.TestCase):
             kernel.write_bytes(b"not-elf")
             initrd.write_bytes(b"initrd")
 
-            with mock.patch("testvm._qemu.build_default_initrd", return_value=initrd) as build_mock:
+            with mock.patch(
+                "testvm._qemu.build_default_initrd", return_value=initrd
+            ) as build_mock:
                 with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                     run_mock.return_value.returncode = 0
                     exit_code = run_vm(kernel=kernel, arch="arm")
@@ -1055,8 +1147,12 @@ class RunVmTests(unittest.TestCase):
             kernel.write_bytes(b"not-elf")
             initrd.write_bytes(b"initrd")
 
-            with mock.patch("testvm._qemu.detect_kernel_arch", return_value=Architecture.ARM):
-                with mock.patch("testvm._qemu.build_default_initrd", return_value=initrd) as build_mock:
+            with mock.patch(
+                "testvm._qemu.detect_kernel_arch", return_value=Architecture.ARM
+            ):
+                with mock.patch(
+                    "testvm._qemu.build_default_initrd", return_value=initrd
+                ) as build_mock:
                     with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                         run_mock.return_value.returncode = 0
                         exit_code = run_vm(kernel=kernel)

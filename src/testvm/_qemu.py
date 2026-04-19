@@ -9,9 +9,9 @@ from typing import Iterable
 
 from ._arch import Architecture, detect_kernel_arch, normalize_arch
 from ._busybox import build_default_initrd
+from ._errors import CommandExecutionError, TestvmError
 from ._ext4 import pack_ext4_image, unpack_ext4_image
 from ._initrd import _build_composed_initrd
-from ._errors import CommandExecutionError, TestvmError
 
 _SHARE_MOUNT_POINT = "/mnt/testvm-share"
 
@@ -43,17 +43,19 @@ def _validate_autorun_path(path: str) -> str:
 def _resolve_share_configuration(
     *,
     share_dir: Path | None,
-    autorun: str | None,
-    run_host_path: Path | None,
+    autorun_vm_path: str | None,
+    autorun_path: Path | None,
 ) -> tuple[Path | None, str | None]:
     resolved_share = None if share_dir is None else share_dir.expanduser().resolve()
-    resolved_autorun = None if autorun is None else _validate_autorun_path(autorun)
+    resolved_autorun = (
+        None if autorun_vm_path is None else _validate_autorun_path(autorun_vm_path)
+    )
 
-    if run_host_path is not None:
+    if autorun_path is not None:
         if resolved_autorun is not None:
             raise TestvmError("--run-host-path cannot be used together with --autorun")
 
-        host_path = run_host_path.expanduser().resolve()
+        host_path = autorun_path.expanduser().resolve()
         if not host_path.is_file():
             raise TestvmError(f"Host autorun path does not exist: {host_path}")
 
@@ -202,8 +204,8 @@ def run_vm(
     share_dir: str | Path | None = None,
     share_mode: str | ShareMode = ShareMode.INITRD,
     sync_share_back: bool = False,
-    autorun: str | None = None,
-    run_host_path: str | Path | None = None,
+    autorun_vm_path: str | None = None,
+    autorun_path: str | Path | None = None,
     force_rebuild_initrd: bool = False,
 ) -> int:
     kernel_path = Path(kernel).expanduser().resolve()
@@ -211,8 +213,8 @@ def run_vm(
         raise TestvmError(f"Kernel does not exist: {kernel_path}")
     resolved_share_dir, resolved_autorun = _resolve_share_configuration(
         share_dir=None if share_dir is None else Path(share_dir),
-        autorun=autorun,
-        run_host_path=None if run_host_path is None else Path(run_host_path),
+        autorun_vm_path=autorun_vm_path,
+        autorun_path=None if autorun_path is None else Path(autorun_path),
     )
     if sync_share_back and resolved_share_dir is None:
         raise TestvmError("--sync-share-back requires --share-dir or --run-host-path")
@@ -237,8 +239,7 @@ def run_vm(
 
     with tempfile.TemporaryDirectory(prefix="testvm-share-") as temp_dir:
         if module_initrd is not None or (
-            resolved_share_dir is not None
-            and normalized_share_mode is ShareMode.INITRD
+            resolved_share_dir is not None and normalized_share_mode is ShareMode.INITRD
         ):
             initrd_path = _build_composed_initrd(
                 initrd_path,
@@ -252,11 +253,10 @@ def run_vm(
             )
 
         share_image: Path | None = None
-        if (
-            resolved_share_dir is not None
-            and normalized_share_mode is ShareMode.EXT4
-        ):
-            share_image = pack_ext4_image(resolved_share_dir, Path(temp_dir) / "share.img")
+        if resolved_share_dir is not None and normalized_share_mode is ShareMode.EXT4:
+            share_image = pack_ext4_image(
+                resolved_share_dir, Path(temp_dir) / "share.img"
+            )
 
         command = _build_qemu_command(
             kernel=kernel_path,
@@ -276,7 +276,11 @@ def run_vm(
         except FileNotFoundError as exc:
             raise CommandExecutionError(f"Command not found: {command[0]}") from exc
 
-        if sync_share_back and resolved_share_dir is not None and share_image is not None:
+        if (
+            sync_share_back
+            and resolved_share_dir is not None
+            and share_image is not None
+        ):
             sync_dir = Path(temp_dir) / "share-out"
             unpack_ext4_image(share_image, sync_dir)
             _replace_directory_contents(resolved_share_dir, sync_dir)

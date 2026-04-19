@@ -6,8 +6,8 @@ from typing import Annotated
 import typer
 
 from . import (
-    Architecture,
     DEFAULT_BUSYBOX_REF,
+    Architecture,
     ShareMode,
     build_default_initrd,
     pack_ext4_image,
@@ -56,7 +56,9 @@ def unpack_command(
 
 @ext4_app.command("pack")
 def pack_ext4_command(
-    source_dir: Annotated[Path, typer.Argument(help="Source directory to convert into ext4.")],
+    source_dir: Annotated[
+        Path, typer.Argument(help="Source directory to convert into ext4.")
+    ],
     output_image: Annotated[Path, typer.Argument(help="Output ext4 image path.")],
     size: Annotated[
         str | None,
@@ -86,7 +88,9 @@ def unpack_ext4_command(
 def build_default_command(
     arch: Annotated[Architecture, typer.Option(help="Target architecture.")],
     output: Annotated[Path | None, typer.Option(help="Output initrd path.")] = None,
-    workdir: Annotated[Path | None, typer.Option(help="BusyBox work directory.")] = None,
+    workdir: Annotated[
+        Path | None, typer.Option(help="BusyBox work directory.")
+    ] = None,
     force_rebuild: Annotated[
         bool, typer.Option("--force-rebuild", help="Rebuild cached BusyBox artifacts.")
     ] = False,
@@ -111,11 +115,19 @@ def build_default_command(
 def run_command(
     vmlinux: Annotated[
         Path,
-        typer.Argument(help="Kernel image to boot. Architecture is auto-detected when possible."),
+        typer.Argument(
+            help="Kernel image to boot. Architecture is auto-detected when possible."
+        ),
     ],
-    arch: Annotated[Architecture | None, typer.Option(help="Override detected architecture.")] = None,
-    initrd: Annotated[Path | None, typer.Option(help="Initrd path to boot with.")] = None,
-    gdb_port: Annotated[int | None, typer.Option(help="Enable QEMU gdb stub on this TCP port.")] = None,
+    arch: Annotated[
+        Architecture | None, typer.Option(help="Override detected architecture.")
+    ] = None,
+    initrd: Annotated[
+        Path | None, typer.Option(help="Initrd path to boot with.")
+    ] = None,
+    gdb_port: Annotated[
+        int | None, typer.Option(help="Enable QEMU gdb stub on this TCP port.")
+    ] = None,
     memory: Annotated[str, typer.Option(help="Guest memory size.")] = "512M",
     smp: Annotated[int, typer.Option(help="Guest vCPU count.")] = 1,
     append: Annotated[
@@ -151,18 +163,21 @@ def run_command(
             help="Extract the shared ext4 image back into the host directory after QEMU exits. Requires --share-mode ext4.",
         ),
     ] = False,
-    autorun: Annotated[
+    autorun_vm_path: Annotated[
         str | None,
         typer.Option(help="Absolute guest path to execute after init completes."),
     ] = None,
-    run_host_path: Annotated[
+    autorun: Annotated[
         Path | None,
         typer.Option(
             help="Host file inside the shared directory to execute automatically in the guest.",
         ),
     ] = None,
     force_rebuild_initrd: Annotated[
-        bool, typer.Option("--force-rebuild-initrd", help="Rebuild the auto-generated initrd.")
+        bool,
+        typer.Option(
+            "--force-rebuild-initrd", help="Rebuild the auto-generated initrd."
+        ),
     ] = False,
 ) -> None:
     try:
@@ -180,8 +195,8 @@ def run_command(
             share_dir=share_dir,
             share_mode=share_mode,
             sync_share_back=sync_share_back,
-            autorun=autorun,
-            run_host_path=run_host_path,
+            autorun_vm_path=autorun_vm_path,
+            autorun_path=autorun,
             force_rebuild_initrd=force_rebuild_initrd,
         )
     except TestvmError as exc:

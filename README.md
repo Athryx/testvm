@@ -52,7 +52,7 @@ testvm initrd build-default --arch arm
 testvm run ./zImage
 testvm run ./vmlinux --module-initrd ./initrd_out
 testvm run ./vmlinux --initrd ./base.cpio.gz --module-initrd ./modules.cpio.gz
-testvm run ./vmlinux --share-dir ./shared --autorun /mnt/testvm-share/run.sh
+testvm run ./vmlinux --share-dir ./shared --autorun-vm-path /mnt/testvm-share/run.sh
 testvm run ./vmlinux --share-dir ./shared --share-mode ext4 --sync-share-back
 testvm run ./vmlinux --run-host-path ./shared/run.sh
 ```
