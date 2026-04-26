@@ -60,15 +60,15 @@ testvm initrd build-default --arch arm
 testvm run ./zImage
 testvm run ./vmlinux --module-initrd ./initrd_out
 testvm run ./vmlinux --initrd ./base.cpio.gz --module-initrd ./modules.cpio.gz
-testvm run ./vmlinux --share-dir ./shared --autorun /mnt/testvm-share/run.sh
+testvm run ./vmlinux --share-dir ./shared --autorun-vm-path /mnt/testvm-share/run.sh
 testvm run ./vmlinux --share-dir ./shared --share-mode ext4 --sync-share-back
-testvm run ./vmlinux --run-host-path ./shared/run.sh
+testvm run ./vmlinux --autorun ./shared/run.sh
 ```
 
 `testvm run` auto-detects the kernel architecture when `--arch` is omitted. ELF kernels are detected from the ELF header; raw kernel images such as ARM `zImage`, arm64 `Image`, and x86 `bzImage` fall back to `file(1)`/`libmagic`. If detection fails, pass `--arch` explicitly. If `--initrd` is omitted, `testvm` reuses or builds a cached BusyBox initrd for the selected architecture.
 `testvm initrd unpack` accepts gzip-compressed, lz4-compressed, or plain `cpio` initrds.
 When `--module-initrd` is provided, `testvm` merges that packed initrd or unpacked rootfs onto the base initrd before boot and installs a small `/init` wrapper that reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before handing control to the original init. Packed base or overlay initrds may be gzip, lz4, or plain `cpio`.
-When `--share-dir` is provided, `testvm` shares that host directory at `/mnt/testvm-share`. The default `--share-mode initrd` embeds the files directly into the boot initrd, which avoids guest block-device discovery issues. `--share-mode ext4` preserves the previous virtio-block flow and is the only mode that supports `--sync-share-back`. `--run-host-path` is the convenience path for automatically running a host-side script or binary from that shared directory after init completes.
+When `--share-dir` is provided, `testvm` shares that host directory at `/mnt/testvm-share`. The default `--share-mode initrd` embeds the files directly into the boot initrd, which avoids guest block-device discovery issues. `--share-mode ext4` preserves the previous virtio-block flow and is the only mode that supports `--sync-share-back`. `--autorun` executes a host-side script or binary inside the guest. Without `--share-dir`, only that one file is shared at `/mnt/testvm-share/<name>`; with `--share-dir`, the autorun file must already be inside the shared directory.
 
 ## Docker Builder
 
@@ -106,7 +106,7 @@ run_vm(
     kernel="zImage",
     initrd="merged.cpio.gz",
     gdb_port=1234,
-    run_host_path="shared/run.sh",
+    autorun_path="shared/run.sh",
     share_mode=ShareMode.INITRD,
 )
 ```

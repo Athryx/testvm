@@ -64,6 +64,8 @@ class CliTests(unittest.TestCase):
             kernel.write_bytes(b"not-used")
             shared = Path(temp_dir) / "shared"
             shared.mkdir()
+            autorun = shared / "run.sh"
+            autorun.write_text("#!/bin/sh\n")
             module_rootfs = Path(temp_dir) / "module-rootfs"
             module_rootfs.mkdir()
 
@@ -89,7 +91,7 @@ class CliTests(unittest.TestCase):
                         "--share-mode",
                         "ext4",
                         "--autorun",
-                        "/mnt/testvm-share/run.sh",
+                        str(autorun),
                         "--sync-share-back",
                     ],
                 )
@@ -99,6 +101,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(run_mock.call_args.kwargs["module_initrd"], module_rootfs)
             self.assertTrue(run_mock.call_args.kwargs["nokaslr"])
             self.assertEqual(run_mock.call_args.kwargs["share_mode"], "ext4")
+            self.assertEqual(run_mock.call_args.kwargs["autorun_path"], autorun)
 
     def test_run_command_accepts_arm_arch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

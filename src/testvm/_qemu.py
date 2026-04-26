@@ -45,39 +45,44 @@ def _resolve_share_configuration(
     share_dir: Path | None,
     autorun_vm_path: str | None,
     autorun_path: Path | None,
-) -> tuple[Path | None, str | None]:
+) -> tuple[Path | None, str | None, Path | None]:
     resolved_share = None if share_dir is None else share_dir.expanduser().resolve()
     resolved_autorun = (
         None if autorun_vm_path is None else _validate_autorun_path(autorun_vm_path)
     )
+    autorun_only_path: Path | None = None
 
     if autorun_path is not None:
         if resolved_autorun is not None:
-            raise TestvmError("--run-host-path cannot be used together with --autorun")
+            raise TestvmError("--autorun cannot be used together with --autorun-vm-path")
 
         host_path = autorun_path.expanduser().resolve()
         if not host_path.is_file():
             raise TestvmError(f"Host autorun path does not exist: {host_path}")
 
         if resolved_share is None:
-            resolved_share = host_path.parent
-        if not resolved_share.is_dir():
-            raise TestvmError(f"Shared directory does not exist: {resolved_share}")
+            autorun_only_path = host_path
+            resolved_autorun = _validate_autorun_path(
+                f"{_SHARE_MOUNT_POINT}/{host_path.name}"
+            )
+        else:
+            if not resolved_share.is_dir():
+                raise TestvmError(f"Shared directory does not exist: {resolved_share}")
 
-        try:
-            relative = host_path.relative_to(resolved_share)
-        except ValueError as exc:
-            raise TestvmError(
-                f"Host autorun path must be inside the shared directory: {host_path}"
-            ) from exc
-        resolved_autorun = _validate_autorun_path(
-            f"{_SHARE_MOUNT_POINT}/{relative.as_posix()}"
-        )
+            try:
+                relative = host_path.relative_to(resolved_share)
+            except ValueError as exc:
+                raise TestvmError(
+                    f"Host autorun path must be inside the shared directory: {host_path}"
+                ) from exc
+            resolved_autorun = _validate_autorun_path(
+                f"{_SHARE_MOUNT_POINT}/{relative.as_posix()}"
+            )
 
     if resolved_share is not None and not resolved_share.is_dir():
         raise TestvmError(f"Shared directory does not exist: {resolved_share}")
 
-    return resolved_share, resolved_autorun
+    return resolved_share, resolved_autorun, autorun_only_path
 
 
 def _replace_directory_contents(destination: Path, source: Path) -> None:
@@ -211,13 +216,17 @@ def run_vm(
     kernel_path = Path(kernel).expanduser().resolve()
     if not kernel_path.is_file():
         raise TestvmError(f"Kernel does not exist: {kernel_path}")
-    resolved_share_dir, resolved_autorun = _resolve_share_configuration(
+    (
+        resolved_share_dir,
+        resolved_autorun,
+        autorun_only_path,
+    ) = _resolve_share_configuration(
         share_dir=None if share_dir is None else Path(share_dir),
         autorun_vm_path=autorun_vm_path,
         autorun_path=None if autorun_path is None else Path(autorun_path),
     )
     if sync_share_back and resolved_share_dir is None:
-        raise TestvmError("--sync-share-back requires --share-dir or --run-host-path")
+        raise TestvmError("--sync-share-back requires --share-dir")
     normalized_share_mode = normalize_share_mode(share_mode)
     if sync_share_back and normalized_share_mode is not ShareMode.EXT4:
         raise TestvmError("--sync-share-back requires --share-mode ext4")
@@ -238,24 +247,31 @@ def run_vm(
         )
 
     with tempfile.TemporaryDirectory(prefix="testvm-share-") as temp_dir:
+        effective_share_dir = resolved_share_dir
+        if autorun_only_path is not None:
+            autorun_share_dir = Path(temp_dir) / "autorun-share"
+            autorun_share_dir.mkdir()
+            shutil.copy2(autorun_only_path, autorun_share_dir / autorun_only_path.name)
+            effective_share_dir = autorun_share_dir
+
         if module_initrd is not None or (
-            resolved_share_dir is not None and normalized_share_mode is ShareMode.INITRD
+            effective_share_dir is not None and normalized_share_mode is ShareMode.INITRD
         ):
             initrd_path = _build_composed_initrd(
                 initrd_path,
                 output_path=Path(temp_dir) / "merged-initrd.cpio.gz",
                 module_overlay=module_initrd,
                 shared_dir=(
-                    resolved_share_dir
+                    effective_share_dir
                     if normalized_share_mode is ShareMode.INITRD
                     else None
                 ),
             )
 
         share_image: Path | None = None
-        if resolved_share_dir is not None and normalized_share_mode is ShareMode.EXT4:
+        if effective_share_dir is not None and normalized_share_mode is ShareMode.EXT4:
             share_image = pack_ext4_image(
-                resolved_share_dir, Path(temp_dir) / "share.img"
+                effective_share_dir, Path(temp_dir) / "share.img"
             )
 
         command = _build_qemu_command(

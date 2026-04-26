@@ -1021,7 +1021,60 @@ class RunVmTests(unittest.TestCase):
             self.assertNotIn("testvm_share=1", " ".join(command))
             self.assertIn(str(merged_initrd), command)
 
-    def test_run_vm_run_host_path_infers_share_dir(self) -> None:
+    def test_run_vm_autorun_without_share_dir_shares_only_autorun_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            kernel = temp_path / "vmlinux"
+            initrd = temp_path / "initrd.cpio.gz"
+            merged_initrd = temp_path / "merged-initrd.cpio.gz"
+            shared = temp_path / "shared"
+            shared.mkdir()
+            host_program = shared / "bin" / "tool.sh"
+            host_program.parent.mkdir()
+            host_program.write_text("#!/bin/sh\necho ok\n")
+            (host_program.parent / "extra.txt").write_text("do not share me\n")
+            _make_elf(kernel, 62)
+            initrd.write_bytes(b"initrd")
+            merged_initrd.write_bytes(b"merged")
+
+            def fake_compose(
+                base_initrd: str | Path,
+                *,
+                output_path: str | Path | None = None,
+                module_overlay: str | Path | None = None,
+                shared_dir: str | Path | None = None,
+            ) -> Path:
+                self.assertEqual(Path(base_initrd), initrd)
+                self.assertIsNone(module_overlay)
+                self.assertIsNotNone(shared_dir)
+                share_path = Path(shared_dir)
+                self.assertNotEqual(share_path, host_program.parent)
+                self.assertEqual(
+                    sorted(child.name for child in share_path.iterdir()), ["tool.sh"]
+                )
+                self.assertEqual(
+                    (share_path / "tool.sh").read_text(), host_program.read_text()
+                )
+                return merged_initrd
+
+            with mock.patch("testvm._qemu.build_default_initrd", return_value=initrd):
+                with mock.patch(
+                    "testvm._qemu._build_composed_initrd", side_effect=fake_compose
+                ) as compose_mock:
+                    with mock.patch("testvm._qemu.subprocess.run") as run_mock:
+                        run_mock.return_value.returncode = 0
+                        exit_code = run_vm(kernel=kernel, autorun_path=host_program)
+
+            self.assertEqual(exit_code, 0)
+            compose_mock.assert_called_once()
+            command = run_mock.call_args.args[0]
+            self.assertIn(
+                "testvm_autorun=/mnt/testvm-share/tool.sh",
+                " ".join(command),
+            )
+            self.assertNotIn("testvm_share=1", " ".join(command))
+
+    def test_run_vm_autorun_with_share_dir_uses_existing_share(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             kernel = temp_path / "vmlinux"
@@ -1042,23 +1095,27 @@ class RunVmTests(unittest.TestCase):
                 ) as compose_mock:
                     with mock.patch("testvm._qemu.subprocess.run") as run_mock:
                         run_mock.return_value.returncode = 0
-                        exit_code = run_vm(kernel=kernel, autorun_path=host_program)
+                        exit_code = run_vm(
+                            kernel=kernel,
+                            share_dir=shared,
+                            autorun_path=host_program,
+                        )
 
             self.assertEqual(exit_code, 0)
             compose_mock.assert_called_once_with(
                 initrd,
                 output_path=mock.ANY,
                 module_overlay=None,
-                shared_dir=host_program.parent,
+                shared_dir=shared,
             )
             command = run_mock.call_args.args[0]
             self.assertIn(
-                "testvm_autorun=/mnt/testvm-share/tool.sh",
+                "testvm_autorun=/mnt/testvm-share/bin/tool.sh",
                 " ".join(command),
             )
             self.assertNotIn("testvm_share=1", " ".join(command))
 
-    def test_run_vm_rejects_run_host_path_outside_share_dir(self) -> None:
+    def test_run_vm_rejects_autorun_outside_share_dir(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             kernel = temp_path / "vmlinux"
