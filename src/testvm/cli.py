@@ -8,6 +8,7 @@ import typer
 from . import (
     DEFAULT_BUSYBOX_REF,
     Architecture,
+    NetworkMode,
     ShareMode,
     build_default_initrd,
     pack_ext4_image,
@@ -142,6 +143,40 @@ def run_command(
         list[str] | None,
         typer.Option(help="Additional raw QEMU arguments. Repeatable."),
     ] = None,
+    network: Annotated[
+        NetworkMode,
+        typer.Option("--network", "--net", help="Guest networking mode."),
+    ] = NetworkMode.USER,
+    network_tap: Annotated[
+        str | None,
+        typer.Option(help="Preconfigured TAP interface for --network tap."),
+    ] = None,
+    network_bridge: Annotated[
+        str | None,
+        typer.Option(help="Preconfigured bridge name for --network bridge."),
+    ] = None,
+    hostfwd: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="Forward TCP HOST_PORT:GUEST_PORT. Repeatable; requires --network user.",
+        ),
+    ] = None,
+    network_ip: Annotated[
+        str | None,
+        typer.Option(help="Static guest IP in CIDR form, such as 192.168.1.10/24."),
+    ] = None,
+    network_gateway: Annotated[
+        str | None,
+        typer.Option(help="Static guest default gateway. Requires --network-ip."),
+    ] = None,
+    network_dns: Annotated[
+        list[str] | None,
+        typer.Option(help="Static guest DNS server. Repeatable; requires --network-ip."),
+    ] = None,
+    network_host_ip: Annotated[
+        str | None,
+        typer.Option(help="Guest-visible host IP to expose as testvm-host."),
+    ] = None,
     module_initrd: Annotated[
         Path | None,
         typer.Option(
@@ -191,6 +226,14 @@ def run_command(
             append=append or (),
             nokaslr=nokaslr,
             qemu_arg=qemu_arg or (),
+            network=network,
+            network_tap=network_tap,
+            network_bridge=network_bridge,
+            hostfwd=hostfwd or (),
+            network_ip=network_ip,
+            network_gateway=network_gateway,
+            network_dns=network_dns or (),
+            network_host_ip=network_host_ip,
             module_initrd=module_initrd,
             share_dir=share_dir,
             share_mode=share_mode,

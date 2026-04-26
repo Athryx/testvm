@@ -201,7 +201,7 @@ testvm ext4 unpack ./shared.img ./shared-out
 Syntax:
 
 ```bash
-testvm run KERNEL [--arch ARCH] [--initrd PATH] [--gdb-port PORT] [--memory SIZE] [--smp N] [--append ARG]... [--nokaslr] [--qemu-arg ARG]... [--module-initrd PATH] [--share-dir PATH] [--share-mode {initrd,ext4}] [--sync-share-back] [--autorun-vm-path GUEST_PATH] [--autorun HOST_PATH] [--force-rebuild-initrd]
+testvm run KERNEL [--arch ARCH] [--initrd PATH] [--gdb-port PORT] [--memory SIZE] [--smp N] [--append ARG]... [--nokaslr] [--qemu-arg ARG]... [--network {user,tap,bridge,none}] [--network-tap IFNAME] [--network-bridge BRIDGE] [--hostfwd HOST_PORT:GUEST_PORT]... [--network-ip CIDR] [--network-gateway IP] [--network-dns IP]... [--network-host-ip IP] [--module-initrd PATH] [--share-dir PATH] [--share-mode {initrd,ext4}] [--sync-share-back] [--autorun-vm-path GUEST_PATH] [--autorun HOST_PATH] [--force-rebuild-initrd]
 ```
 
 Options:
@@ -215,6 +215,14 @@ Options:
 - `--append`: additional kernel command line arguments; repeat this flag for multiple values
 - `--nokaslr`: appends `nokaslr` to the kernel command line
 - `--qemu-arg`: additional raw QEMU arguments; repeat this flag for multiple values
+- `--network`/`--net`: guest networking mode; one of `user`, `tap`, `bridge`, or `none`; default is `user`
+- `--network-tap`: preconfigured TAP interface name; required with `--network tap`
+- `--network-bridge`: preconfigured bridge name; required with `--network bridge`
+- `--hostfwd`: TCP host-to-guest forwarding as `HOST_PORT:GUEST_PORT`; repeatable and valid only with `--network user`
+- `--network-ip`: static guest IP in CIDR form; if omitted, the initrd uses DHCP
+- `--network-gateway`: static guest default gateway; requires `--network-ip`
+- `--network-dns`: static guest DNS server; repeatable and requires `--network-ip`
+- `--network-host-ip`: guest-visible host IP to expose as `testvm-host`
 - `--module-initrd`: packed initrd file or unpacked rootfs directory to merge onto the base initrd before boot
 - `--share-dir`: host directory to expose in the guest at `/mnt/testvm-share`
 - `--share-mode`: sharing transport; `initrd` is the default and `ext4` preserves the virtio-block flow
@@ -234,8 +242,14 @@ Behavior:
 - The module-loading wrapper reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before the original init runs
 - If `--share-dir` is used with the default `--share-mode initrd`, `testvm` copies that directory into the boot initrd at `/mnt/testvm-share`
 - If `--share-dir` is used with `--share-mode ext4`, `testvm` creates a temporary ext4 image and adds it to QEMU as a virtio block drive
-- If `--autorun` is used without `--share-dir`, the shared directory defaults to the file's parent directory
-- The default BusyBox init script mounts ext4-backed shares when requested and drops to a shell after any autorun program exits
+- If `--autorun` is used without `--share-dir`, only the autorun file is shared at `/mnt/testvm-share/<name>`
+- If `--autorun` is used with `--share-dir`, the autorun file must be inside the shared directory
+- By default, `testvm` enables QEMU user-mode NAT and the default BusyBox initrd brings up `eth0` with DHCP
+- In user-mode networking, `testvm-host` resolves to `10.0.2.2` unless `--network-host-ip` overrides it
+- `--hostfwd` maps host TCP ports to guest TCP ports, for example `--hostfwd 10022:22`
+- `--network tap` and `--network bridge` require preconfigured host networking; `testvm` does not create TAP devices or bridges
+- `--network none` disables QEMU networking with `-nic none`
+- The default BusyBox init script mounts ext4-backed shares, configures networking when requested, then drops to a shell after any autorun program exits
 - Returns QEMU's exit code directly
 
 Architecture-specific QEMU launch behavior:
@@ -244,6 +258,7 @@ Architecture-specific QEMU launch behavior:
 - `arm`: uses `qemu-system-arm -machine virt -cpu cortex-a15`
 - `aarch64`: uses `qemu-system-aarch64 -machine virt -cpu max`
 - All architectures add `-nographic -monitor none -serial stdio`
+- Networking uses `virtio-net-pci` on `x86_64` and `virtio-net-device` on `arm`/`aarch64`
 - Default kernel cmdline always includes `rdinit=/init`
 - Console defaults are:
   - `x86_64`: `console=ttyS0`
@@ -263,6 +278,10 @@ testvm run ./vmlinux --initrd ./base.cpio.gz --module-initrd ./modules.cpio.gz
 testvm run ./vmlinux --share-dir ./shared --autorun-vm-path /mnt/testvm-share/run.sh
 testvm run ./vmlinux --share-dir ./shared --share-mode ext4 --sync-share-back
 testvm run ./vmlinux --autorun ./shared/run.sh
+testvm run ./vmlinux --hostfwd 10022:22
+testvm run ./vmlinux --network tap --network-tap tap0 --network-host-ip 192.168.50.1
+testvm run ./vmlinux --network bridge --network-bridge br0 --network-host-ip 192.168.50.1
+testvm run ./vmlinux --network none
 ```
 
 ## Agent Guidance
@@ -277,6 +296,11 @@ Use these defaults unless the user asks for something else:
 - Use `--nokaslr` when the user explicitly wants kernel address randomization disabled
 - Use repeated `--append` flags for separate kernel args
 - Use repeated `--qemu-arg` flags for raw QEMU passthrough arguments
+- Prefer the default `--network user` for simple guest networking
+- Use `--hostfwd HOST_PORT:GUEST_PORT` when the host needs to connect to a guest TCP service
+- Use `testvm-host` from inside the guest to connect back to a host service in user-mode networking
+- Use `--network tap` or `--network bridge` only when the host TAP/bridge setup already exists
+- Use `--network none` when a test needs no guest networking at all
 - Prefer `--autorun` for quick "run this script/binary inside the guest" requests
 - Prefer the default `--share-mode initrd` unless the user specifically needs ext4 behavior or host sync-back
 - Add `--sync-share-back` only when the user explicitly wants guest-side changes copied back to the host folder; pair it with `--share-mode ext4`
@@ -285,6 +309,7 @@ Examples:
 
 ```bash
 testvm run ./vmlinux --append panic=-1 --nokaslr
+testvm run ./vmlinux --hostfwd 10022:22
 testvm run ./vmlinux --qemu-arg -no-reboot --qemu-arg -d --qemu-arg int
 ```
 

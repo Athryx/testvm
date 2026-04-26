@@ -63,12 +63,17 @@ testvm run ./vmlinux --initrd ./base.cpio.gz --module-initrd ./modules.cpio.gz
 testvm run ./vmlinux --share-dir ./shared --autorun-vm-path /mnt/testvm-share/run.sh
 testvm run ./vmlinux --share-dir ./shared --share-mode ext4 --sync-share-back
 testvm run ./vmlinux --autorun ./shared/run.sh
+testvm run ./vmlinux --hostfwd 10022:22
+testvm run ./vmlinux --network tap --network-tap tap0 --network-host-ip 192.168.50.1
+testvm run ./vmlinux --network bridge --network-bridge br0 --network-host-ip 192.168.50.1
+testvm run ./vmlinux --network none
 ```
 
 `testvm run` auto-detects the kernel architecture when `--arch` is omitted. ELF kernels are detected from the ELF header; raw kernel images such as ARM `zImage`, arm64 `Image`, and x86 `bzImage` fall back to `file(1)`/`libmagic`. If detection fails, pass `--arch` explicitly. If `--initrd` is omitted, `testvm` reuses or builds a cached BusyBox initrd for the selected architecture.
 `testvm initrd unpack` accepts gzip-compressed, lz4-compressed, or plain `cpio` initrds.
 When `--module-initrd` is provided, `testvm` merges that packed initrd or unpacked rootfs onto the base initrd before boot and installs a small `/init` wrapper that reads `lib/modules/*/modules.load` and runs `modprobe` for each listed entry before handing control to the original init. Packed base or overlay initrds may be gzip, lz4, or plain `cpio`.
 When `--share-dir` is provided, `testvm` shares that host directory at `/mnt/testvm-share`. The default `--share-mode initrd` embeds the files directly into the boot initrd, which avoids guest block-device discovery issues. `--share-mode ext4` preserves the previous virtio-block flow and is the only mode that supports `--sync-share-back`. `--autorun` executes a host-side script or binary inside the guest. Without `--share-dir`, only that one file is shared at `/mnt/testvm-share/<name>`; with `--share-dir`, the autorun file must already be inside the shared directory.
+Networking defaults to QEMU user-mode NAT. The generated BusyBox initrd brings up `eth0`, uses DHCP by default, and exposes the host as `testvm-host` in user mode. Use repeatable `--hostfwd HOST_PORT:GUEST_PORT` to connect from the host to guest TCP services. `--network tap` and `--network bridge` require preconfigured host networking and can use `--network-host-ip` to expose the host as `testvm-host`; `--network none` disables QEMU networking.
 
 ## Docker Builder
 
@@ -86,6 +91,7 @@ apt-get update && apt-get install -y --no-install-recommends \
 
 ```python
 from testvm import (
+    NetworkMode,
     ShareMode,
     build_merged_initrd,
     build_default_initrd,
@@ -108,5 +114,7 @@ run_vm(
     gdb_port=1234,
     autorun_path="shared/run.sh",
     share_mode=ShareMode.INITRD,
+    network=NetworkMode.USER,
+    hostfwd=["10022:22"],
 )
 ```

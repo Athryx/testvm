@@ -8,7 +8,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from testvm import DATA_DIR_ENV_VAR, CommandExecutionError, ShareMode, TestvmError
+from testvm import (
+    DATA_DIR_ENV_VAR,
+    CommandExecutionError,
+    NetworkMode,
+    ShareMode,
+    TestvmError,
+)
 from testvm._arch import Architecture, detect_kernel_arch, normalize_arch
 from testvm._busybox import (
     DEFAULT_BUSYBOX_REF,
@@ -636,6 +642,11 @@ class BusyBoxBuildTests(unittest.TestCase):
             self.assertIn("CONFIG_MODPROBE=y", run_cmd[-1])
             self.assertIn("CONFIG_INSMOD=y", run_cmd[-1])
             self.assertIn("# CONFIG_MODPROBE_SMALL is not set", run_cmd[-1])
+            self.assertIn("CONFIG_IFCONFIG=y", run_cmd[-1])
+            self.assertIn("CONFIG_ROUTE=y", run_cmd[-1])
+            self.assertIn("CONFIG_UDHCPC=y", run_cmd[-1])
+            self.assertIn("CONFIG_PING=y", run_cmd[-1])
+            self.assertIn("CONFIG_NC=y", run_cmd[-1])
 
             build_mount = next(
                 item for item in run_cmd if f"dst={DOCKER_BUILD_DIR}" in item
@@ -768,6 +779,14 @@ class BusyBoxBuildTests(unittest.TestCase):
             self.assertIn("/mnt/testvm-share", script)
             self.assertIn("testvm_autorun=", script)
             self.assertIn('"$autorun_path"', script)
+            self.assertIn("testvm_net=1", script)
+            self.assertIn("configure_testvm_network", script)
+            self.assertIn("udhcpc -i eth0", script)
+            self.assertIn("testvm-host", script)
+
+            udhcpc_script = rootfs_dir / "etc" / "udhcpc" / "default.script"
+            self.assertTrue(udhcpc_script.exists())
+            self.assertIn("bound|renew", udhcpc_script.read_text())
 
 
 class RunVmTests(unittest.TestCase):
@@ -787,7 +806,12 @@ class RunVmTests(unittest.TestCase):
         self.assertIn("-initrd", command)
         self.assertIn("tcp::1234", command)
         self.assertEqual(command[-1], "-no-reboot")
-        self.assertIn("console=ttyS0 rdinit=/init nokaslr panic=-1", command)
+        self.assertIn("-netdev", command)
+        self.assertIn("user,id=testvm-net0", command)
+        self.assertIn("virtio-net-pci,netdev=testvm-net0", command)
+        self.assertIn("testvm_net_user=1", " ".join(command))
+        self.assertIn("testvm_net_host=10.0.2.2", " ".join(command))
+        self.assertIn("nokaslr panic=-1", " ".join(command))
 
     def test_build_qemu_command_adds_share_drive_and_autorun(self) -> None:
         command = _build_qemu_command(
@@ -805,10 +829,10 @@ class RunVmTests(unittest.TestCase):
         )
         self.assertIn("-drive", command)
         self.assertIn("file=/tmp/share.img,format=raw,if=virtio", command)
-        self.assertIn(
-            "console=ttyS0 rdinit=/init testvm_share=1 testvm_autorun=/mnt/testvm-share/run.sh",
-            command,
-        )
+        cmdline = " ".join(command)
+        self.assertIn("testvm_net=1", cmdline)
+        self.assertIn("testvm_share=1", cmdline)
+        self.assertIn("testvm_autorun=/mnt/testvm-share/run.sh", cmdline)
 
     def test_build_qemu_command_for_arm(self) -> None:
         command = _build_qemu_command(
@@ -825,7 +849,110 @@ class RunVmTests(unittest.TestCase):
         self.assertIn("qemu-system-arm", command[0])
         self.assertIn("virt", command)
         self.assertIn("cortex-a15", command)
-        self.assertIn("console=ttyAMA0 rdinit=/init panic=-1", command)
+        self.assertIn("virtio-net-device,netdev=testvm-net0", command)
+        self.assertIn("console=ttyAMA0 rdinit=/init", " ".join(command))
+        self.assertIn("panic=-1", " ".join(command))
+
+    def test_build_qemu_command_can_disable_networking(self) -> None:
+        command = _build_qemu_command(
+            kernel=Path("/tmp/vmlinux"),
+            arch="x86_64",
+            initrd=Path("/tmp/initrd.cpio.gz"),
+            gdb_port=None,
+            memory="1G",
+            smp=1,
+            append=[],
+            nokaslr=False,
+            qemu_arg=[],
+            network=NetworkMode.NONE,
+        )
+
+        self.assertIn("-nic", command)
+        self.assertIn("none", command)
+        self.assertNotIn("testvm_net=1", " ".join(command))
+
+    def test_build_qemu_command_adds_user_network_host_forwards(self) -> None:
+        command = _build_qemu_command(
+            kernel=Path("/tmp/vmlinux"),
+            arch="x86_64",
+            initrd=Path("/tmp/initrd.cpio.gz"),
+            gdb_port=None,
+            memory="1G",
+            smp=1,
+            append=[],
+            nokaslr=False,
+            qemu_arg=[],
+            hostfwd=["10022:22", "18080:80"],
+        )
+
+        self.assertIn(
+            "user,id=testvm-net0,hostfwd=tcp::10022-:22,hostfwd=tcp::18080-:80",
+            command,
+        )
+
+    def test_build_qemu_command_adds_tap_network(self) -> None:
+        command = _build_qemu_command(
+            kernel=Path("/tmp/Image"),
+            arch="aarch64",
+            initrd=Path("/tmp/initrd.cpio.gz"),
+            gdb_port=None,
+            memory="1G",
+            smp=1,
+            append=[],
+            nokaslr=False,
+            qemu_arg=[],
+            network=NetworkMode.TAP,
+            network_tap="tap-testvm0",
+            network_host_ip="192.168.50.1",
+        )
+
+        self.assertIn(
+            "tap,id=testvm-net0,ifname=tap-testvm0,script=no,downscript=no",
+            command,
+        )
+        self.assertIn("virtio-net-device,netdev=testvm-net0", command)
+        self.assertIn("testvm_net_host=192.168.50.1", " ".join(command))
+
+    def test_build_qemu_command_adds_bridge_network(self) -> None:
+        command = _build_qemu_command(
+            kernel=Path("/tmp/vmlinux"),
+            arch="x86_64",
+            initrd=Path("/tmp/initrd.cpio.gz"),
+            gdb_port=None,
+            memory="1G",
+            smp=1,
+            append=[],
+            nokaslr=False,
+            qemu_arg=[],
+            network=NetworkMode.BRIDGE,
+            network_bridge="br0",
+        )
+
+        self.assertIn("bridge,id=testvm-net0,br=br0", command)
+        self.assertIn("virtio-net-pci,netdev=testvm-net0", command)
+
+    def test_build_qemu_command_adds_static_network_cmdline(self) -> None:
+        command = _build_qemu_command(
+            kernel=Path("/tmp/vmlinux"),
+            arch="x86_64",
+            initrd=Path("/tmp/initrd.cpio.gz"),
+            gdb_port=None,
+            memory="1G",
+            smp=1,
+            append=[],
+            nokaslr=False,
+            qemu_arg=[],
+            network_ip="192.168.50.10/24",
+            network_gateway="192.168.50.1",
+            network_dns=["1.1.1.1", "8.8.8.8"],
+        )
+
+        cmdline = " ".join(command)
+        self.assertIn("testvm_net_config=static", cmdline)
+        self.assertIn("testvm_net_ip=192.168.50.10", cmdline)
+        self.assertIn("testvm_net_netmask=255.255.255.0", cmdline)
+        self.assertIn("testvm_net_gateway=192.168.50.1", cmdline)
+        self.assertIn("testvm_net_dns=1.1.1.1,8.8.8.8", cmdline)
 
     def test_run_vm_adds_nokaslr_to_kernel_command_line(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1154,6 +1281,50 @@ class RunVmTests(unittest.TestCase):
 
             with self.assertRaisesRegex(TestvmError, "may not contain whitespace"):
                 run_vm(kernel=kernel, autorun_vm_path="/mnt/testvm-share/run me")
+
+    def test_run_vm_rejects_hostfwd_without_user_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kernel = Path(temp_dir) / "vmlinux"
+            _make_elf(kernel, 62)
+
+            with self.assertRaisesRegex(TestvmError, "--hostfwd"):
+                run_vm(kernel=kernel, network=NetworkMode.NONE, hostfwd=["10022:22"])
+
+    def test_run_vm_requires_tap_name_for_tap_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kernel = Path(temp_dir) / "vmlinux"
+            _make_elf(kernel, 62)
+
+            with self.assertRaisesRegex(TestvmError, "--network-tap"):
+                run_vm(kernel=kernel, network=NetworkMode.TAP)
+
+    def test_run_vm_requires_bridge_name_for_bridge_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kernel = Path(temp_dir) / "vmlinux"
+            _make_elf(kernel, 62)
+
+            with self.assertRaisesRegex(TestvmError, "--network-bridge"):
+                run_vm(kernel=kernel, network=NetworkMode.BRIDGE)
+
+    def test_run_vm_rejects_bad_hostfwd(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kernel = Path(temp_dir) / "vmlinux"
+            _make_elf(kernel, 62)
+
+            with self.assertRaisesRegex(TestvmError, "HOST_PORT:GUEST_PORT"):
+                run_vm(kernel=kernel, hostfwd=["10022"])
+
+    def test_run_vm_rejects_network_config_for_no_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            kernel = Path(temp_dir) / "vmlinux"
+            _make_elf(kernel, 62)
+
+            with self.assertRaisesRegex(TestvmError, "require networking"):
+                run_vm(
+                    kernel=kernel,
+                    network=NetworkMode.NONE,
+                    network_host_ip="10.0.2.2",
+                )
 
     def test_run_vm_autobuilds_initrd_for_arm_on_x86_host(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

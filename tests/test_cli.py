@@ -84,6 +84,18 @@ class CliTests(unittest.TestCase):
                         "--nokaslr",
                         "--qemu-arg",
                         "-no-reboot",
+                        "--network",
+                        "user",
+                        "--hostfwd",
+                        "10022:22",
+                        "--network-ip",
+                        "192.168.50.10/24",
+                        "--network-gateway",
+                        "192.168.50.1",
+                        "--network-dns",
+                        "1.1.1.1",
+                        "--network-host-ip",
+                        "192.168.50.1",
                         "--module-initrd",
                         str(module_rootfs),
                         "--share-dir",
@@ -102,6 +114,14 @@ class CliTests(unittest.TestCase):
             self.assertTrue(run_mock.call_args.kwargs["nokaslr"])
             self.assertEqual(run_mock.call_args.kwargs["share_mode"], "ext4")
             self.assertEqual(run_mock.call_args.kwargs["autorun_path"], autorun)
+            self.assertEqual(run_mock.call_args.kwargs["network"], "user")
+            self.assertEqual(run_mock.call_args.kwargs["hostfwd"], ["10022:22"])
+            self.assertEqual(
+                run_mock.call_args.kwargs["network_ip"], "192.168.50.10/24"
+            )
+            self.assertEqual(run_mock.call_args.kwargs["network_gateway"], "192.168.50.1")
+            self.assertEqual(run_mock.call_args.kwargs["network_dns"], ["1.1.1.1"])
+            self.assertEqual(run_mock.call_args.kwargs["network_host_ip"], "192.168.50.1")
 
     def test_run_command_accepts_arm_arch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

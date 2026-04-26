@@ -21,6 +21,23 @@ _BUSYBOX_MAKE_VARS = {
     Architecture.ARM: ["ARCH=arm", "CROSS_COMPILE=arm-linux-gnueabihf-"],
     Architecture.AARCH64: ["ARCH=arm64", "CROSS_COMPILE=aarch64-linux-gnu-"],
 }
+_REQUIRED_BUSYBOX_CONFIGS = [
+    "CONFIG_IFCONFIG",
+    "CONFIG_ROUTE",
+    "CONFIG_UDHCPC",
+    "CONFIG_PING",
+    "CONFIG_NC",
+]
+
+
+def _enable_busybox_config(option: str) -> list[str]:
+    return [
+        f"if grep -q '^# {option} is not set$' {DOCKER_BUILD_DIR}/.config; then",
+        f"    sed -i 's/^# {option} is not set$/{option}=y/' {DOCKER_BUILD_DIR}/.config",
+        f"elif ! grep -q '^{option}=y$' {DOCKER_BUILD_DIR}/.config; then",
+        f"    printf '\\n{option}=y\\n' >> {DOCKER_BUILD_DIR}/.config",
+        "fi",
+    ]
 
 
 def _run_checked(command: list[str], *, cwd: Path | None = None) -> None:
@@ -134,6 +151,11 @@ def _build_busybox_in_docker(
             f"if grep -q '^CONFIG_MODPROBE_SMALL=y$' {DOCKER_BUILD_DIR}/.config; then",
             f"    sed -i 's/^CONFIG_MODPROBE_SMALL=y$/# CONFIG_MODPROBE_SMALL is not set/' {DOCKER_BUILD_DIR}/.config",
             "fi",
+            *[
+                line
+                for option in _REQUIRED_BUSYBOX_CONFIGS
+                for line in _enable_busybox_config(option)
+            ],
             *extra_config_steps,
             f"{make_prefix} silentoldconfig",
             f"{make_prefix} -j{os.cpu_count() or 1}",
@@ -195,6 +217,14 @@ export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 share_requested=0
 autorun_path=""
+network_requested=0
+network_user=0
+network_config="dhcp"
+network_ip=""
+network_netmask=""
+network_gateway=""
+network_dns=""
+network_host=""
 
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
@@ -204,8 +234,122 @@ for arg in $(cat /proc/cmdline); do
         testvm_autorun=*)
             autorun_path=${arg#testvm_autorun=}
             ;;
+        testvm_net=1)
+            network_requested=1
+            ;;
+        testvm_net_user=1)
+            network_user=1
+            ;;
+        testvm_net_config=*)
+            network_config=${arg#testvm_net_config=}
+            ;;
+        testvm_net_ip=*)
+            network_ip=${arg#testvm_net_ip=}
+            ;;
+        testvm_net_netmask=*)
+            network_netmask=${arg#testvm_net_netmask=}
+            ;;
+        testvm_net_gateway=*)
+            network_gateway=${arg#testvm_net_gateway=}
+            ;;
+        testvm_net_dns=*)
+            network_dns=${arg#testvm_net_dns=}
+            ;;
+        testvm_net_host=*)
+            network_host=${arg#testvm_net_host=}
+            ;;
     esac
 done
+
+write_resolv_conf() {
+    mkdir -p /etc
+    : > /etc/resolv.conf
+    old_ifs=$IFS
+    IFS=,
+    for dns_server in $1; do
+        if [ -n "$dns_server" ]; then
+            echo "nameserver $dns_server" >> /etc/resolv.conf
+        fi
+    done
+    IFS=$old_ifs
+}
+
+write_hosts_file() {
+    mkdir -p /etc
+    {
+        echo "127.0.0.1 localhost"
+        if [ -n "$network_host" ]; then
+            echo "$network_host testvm-host"
+        fi
+    } > /etc/hosts
+}
+
+wait_for_eth0() {
+    for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if [ -e /sys/class/net/eth0 ]; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "warning: networking requested but eth0 was not found"
+    return 1
+}
+
+configure_static_network() {
+    if [ -z "$network_ip" ] || [ -z "$network_netmask" ]; then
+        echo "warning: static networking requires testvm_net_ip and testvm_net_netmask"
+        return 1
+    fi
+
+    ifconfig eth0 "$network_ip" netmask "$network_netmask" up
+    if [ -n "$network_gateway" ]; then
+        route add default gw "$network_gateway" dev eth0 2>/dev/null || true
+    fi
+    if [ -n "$network_dns" ]; then
+        write_resolv_conf "$network_dns"
+    fi
+    write_hosts_file
+    return 0
+}
+
+configure_dhcp_network() {
+    udhcpc -i eth0 -s /etc/udhcpc/default.script -q -t 5 -T 1
+}
+
+configure_testvm_network() {
+    if [ "$network_requested" != "1" ]; then
+        return 0
+    fi
+
+    ifconfig lo up 2>/dev/null || true
+    wait_for_eth0 || return 1
+    ifconfig eth0 up 2>/dev/null || true
+
+    if [ "$network_config" = "static" ]; then
+        configure_static_network || return 1
+    else
+        if configure_dhcp_network; then
+            write_hosts_file
+        elif [ "$network_user" = "1" ]; then
+            echo "warning: DHCP failed; using QEMU user-mode fallback address"
+            network_ip=10.0.2.15
+            network_netmask=255.255.255.0
+            network_gateway=10.0.2.2
+            network_dns=10.0.2.3
+            configure_static_network || return 1
+        else
+            echo "warning: DHCP failed and no static network was configured"
+            return 1
+        fi
+    fi
+
+    echo "testvm network configured"
+    ifconfig eth0 2>/dev/null || true
+    if [ -n "$network_host" ]; then
+        echo "testvm host reachable as testvm-host ($network_host)"
+    fi
+}
 
 mount_testvm_share() {
     mkdir -p /mnt/testvm-share
@@ -227,6 +371,8 @@ if [ "$share_requested" = "1" ]; then
     mount_testvm_share || true
 fi
 
+configure_testvm_network || true
+
 echo "testvm busybox initrd ready"
 
 if [ -n "$autorun_path" ]; then
@@ -245,6 +391,40 @@ exec /bin/sh
 """
     init_path.write_text(script)
     init_path.chmod(0o755)
+
+    udhcpc_script = rootfs_dir / "etc" / "udhcpc" / "default.script"
+    udhcpc_script.parent.mkdir(parents=True, exist_ok=True)
+    udhcpc_script.write_text(
+        """#!/bin/sh
+set -eu
+
+[ -n "${interface:-}" ] || exit 0
+
+case "${1:-}" in
+    deconfig)
+        ifconfig "$interface" 0.0.0.0 2>/dev/null || true
+        ;;
+    bound|renew)
+        mkdir -p /etc
+        if [ -n "${broadcast:-}" ]; then
+            ifconfig "$interface" "$ip" netmask "$subnet" broadcast "$broadcast" up
+        else
+            ifconfig "$interface" "$ip" netmask "$subnet" up
+        fi
+        route del default dev "$interface" 2>/dev/null || true
+        for router_addr in ${router:-}; do
+            route add default gw "$router_addr" dev "$interface" 2>/dev/null || true
+            break
+        done
+        : > /etc/resolv.conf
+        for dns_addr in ${dns:-}; do
+            echo "nameserver $dns_addr" >> /etc/resolv.conf
+        done
+        ;;
+esac
+"""
+    )
+    udhcpc_script.chmod(0o755)
 
 
 def build_default_initrd(

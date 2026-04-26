@@ -3,7 +3,9 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from enum import StrEnum
+from ipaddress import ip_address, ip_interface
 from pathlib import Path
 from typing import Iterable
 
@@ -21,6 +23,19 @@ class ShareMode(StrEnum):
     EXT4 = "ext4"
 
 
+class NetworkMode(StrEnum):
+    USER = "user"
+    TAP = "tap"
+    BRIDGE = "bridge"
+    NONE = "none"
+
+
+@dataclass(frozen=True)
+class _HostForward:
+    host_port: int
+    guest_port: int
+
+
 def normalize_share_mode(share_mode: str | ShareMode) -> ShareMode:
     if isinstance(share_mode, ShareMode):
         return share_mode
@@ -32,12 +47,154 @@ def normalize_share_mode(share_mode: str | ShareMode) -> ShareMode:
         raise TestvmError(f"Unsupported share mode: {share_mode}") from exc
 
 
+def normalize_network_mode(network: str | NetworkMode) -> NetworkMode:
+    if isinstance(network, NetworkMode):
+        return network
+
+    normalized = network.lower()
+    try:
+        return NetworkMode(normalized)
+    except ValueError as exc:
+        raise TestvmError(f"Unsupported network mode: {network}") from exc
+
+
 def _validate_autorun_path(path: str) -> str:
     if not path.startswith("/"):
         raise TestvmError(f"Autorun path must be absolute inside the guest: {path}")
     if any(character.isspace() for character in path):
         raise TestvmError(f"Autorun path may not contain whitespace: {path}")
     return path
+
+
+def _validate_port(value: str) -> int:
+    try:
+        port = int(value, 10)
+    except ValueError as exc:
+        raise TestvmError(f"Invalid TCP port: {value}") from exc
+    if port < 1 or port > 65535:
+        raise TestvmError(f"TCP port out of range: {value}")
+    return port
+
+
+def _parse_host_forward(value: str) -> _HostForward:
+    parts = value.split(":")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise TestvmError(f"Host forward must be HOST_PORT:GUEST_PORT: {value}")
+    return _HostForward(
+        host_port=_validate_port(parts[0]),
+        guest_port=_validate_port(parts[1]),
+    )
+
+
+def _validate_ip(value: str, *, name: str) -> str:
+    try:
+        return str(ip_address(value))
+    except ValueError as exc:
+        raise TestvmError(f"Invalid {name}: {value}") from exc
+
+
+def _validate_cidr(value: str) -> tuple[str, str]:
+    try:
+        interface = ip_interface(value)
+    except ValueError as exc:
+        raise TestvmError(f"Invalid network IP CIDR: {value}") from exc
+    return str(interface.ip), str(interface.network.netmask)
+
+
+def _network_device_for_arch(arch: Architecture) -> str:
+    if arch is Architecture.X86_64:
+        return "virtio-net-pci"
+    return "virtio-net-device"
+
+
+def _resolve_network_configuration(
+    *,
+    arch: Architecture,
+    network: str | NetworkMode,
+    network_tap: str | None,
+    network_bridge: str | None,
+    hostfwd: Iterable[str],
+    network_ip: str | None,
+    network_gateway: str | None,
+    network_dns: Iterable[str],
+    network_host_ip: str | None,
+) -> tuple[list[str], list[str]]:
+    normalized_network = normalize_network_mode(network)
+    host_forwards = [_parse_host_forward(item) for item in hostfwd]
+    dns_servers = [_validate_ip(item, name="DNS server") for item in network_dns]
+    guest_ip = None if network_ip is None else _validate_cidr(network_ip)
+    gateway = (
+        None if network_gateway is None else _validate_ip(network_gateway, name="gateway")
+    )
+    host_ip = (
+        None if network_host_ip is None else _validate_ip(network_host_ip, name="host IP")
+    )
+
+    if normalized_network is not NetworkMode.TAP and network_tap is not None:
+        raise TestvmError("--network-tap requires --network tap")
+    if normalized_network is not NetworkMode.BRIDGE and network_bridge is not None:
+        raise TestvmError("--network-bridge requires --network bridge")
+    if normalized_network is not NetworkMode.USER and host_forwards:
+        raise TestvmError("--hostfwd requires --network user")
+    if normalized_network is NetworkMode.NONE:
+        if guest_ip is not None or gateway is not None or dns_servers or host_ip is not None:
+            raise TestvmError("Network configuration options require networking")
+        return ["-nic", "none"], []
+    if normalized_network is NetworkMode.TAP and not network_tap:
+        raise TestvmError("--network tap requires --network-tap")
+    if normalized_network is NetworkMode.BRIDGE and not network_bridge:
+        raise TestvmError("--network bridge requires --network-bridge")
+    if gateway is not None and guest_ip is None:
+        raise TestvmError("--network-gateway requires --network-ip")
+    if dns_servers and guest_ip is None:
+        raise TestvmError("--network-dns requires --network-ip")
+
+    netdev_options: list[str]
+    if normalized_network is NetworkMode.USER:
+        netdev_options = ["user", "id=testvm-net0"]
+        for forward in host_forwards:
+            netdev_options.append(
+                f"hostfwd=tcp::{forward.host_port}-:{forward.guest_port}"
+            )
+        host_ip = "10.0.2.2" if host_ip is None else host_ip
+    elif normalized_network is NetworkMode.TAP:
+        netdev_options = [
+            "tap",
+            "id=testvm-net0",
+            f"ifname={network_tap}",
+            "script=no",
+            "downscript=no",
+        ]
+    else:
+        netdev_options = ["bridge", "id=testvm-net0", f"br={network_bridge}"]
+
+    qemu_args = [
+        "-netdev",
+        ",".join(netdev_options),
+        "-device",
+        f"{_network_device_for_arch(arch)},netdev=testvm-net0",
+    ]
+    cmdline = ["testvm_net=1"]
+    if normalized_network is NetworkMode.USER:
+        cmdline.append("testvm_net_user=1")
+    if guest_ip is None:
+        cmdline.append("testvm_net_config=dhcp")
+    else:
+        guest_address, guest_netmask = guest_ip
+        cmdline.extend(
+            [
+                "testvm_net_config=static",
+                f"testvm_net_ip={guest_address}",
+                f"testvm_net_netmask={guest_netmask}",
+            ]
+        )
+        if gateway is not None:
+            cmdline.append(f"testvm_net_gateway={gateway}")
+        if dns_servers:
+            cmdline.append(f"testvm_net_dns={','.join(dns_servers)}")
+    if host_ip is not None:
+        cmdline.append(f"testvm_net_host={host_ip}")
+    return qemu_args, cmdline
 
 
 def _resolve_share_configuration(
@@ -115,6 +272,14 @@ def _build_qemu_command(
     qemu_arg: Iterable[str],
     share_image: Path | None = None,
     autorun: str | None = None,
+    network: str | NetworkMode = NetworkMode.USER,
+    network_tap: str | None = None,
+    network_bridge: str | None = None,
+    hostfwd: Iterable[str] = (),
+    network_ip: str | None = None,
+    network_gateway: str | None = None,
+    network_dns: Iterable[str] = (),
+    network_host_ip: str | None = None,
 ) -> list[str]:
     arch = normalize_arch(arch)
     if arch is Architecture.X86_64:
@@ -180,6 +345,19 @@ def _build_qemu_command(
         command.extend(["-initrd", str(initrd)])
     if gdb_port is not None:
         command.extend(["-S", "-gdb", f"tcp::{gdb_port}"])
+    network_args, network_cmdline = _resolve_network_configuration(
+        arch=arch,
+        network=network,
+        network_tap=network_tap,
+        network_bridge=network_bridge,
+        hostfwd=hostfwd,
+        network_ip=network_ip,
+        network_gateway=network_gateway,
+        network_dns=network_dns,
+        network_host_ip=network_host_ip,
+    )
+    command.extend(network_args)
+    cmdline.extend(network_cmdline)
     if share_image is not None:
         command.extend(["-drive", f"file={share_image},format=raw,if=virtio"])
         cmdline.append("testvm_share=1")
@@ -205,6 +383,14 @@ def run_vm(
     append: Iterable[str] = (),
     nokaslr: bool = False,
     qemu_arg: Iterable[str] = (),
+    network: str | NetworkMode = NetworkMode.USER,
+    network_tap: str | None = None,
+    network_bridge: str | None = None,
+    hostfwd: Iterable[str] = (),
+    network_ip: str | None = None,
+    network_gateway: str | None = None,
+    network_dns: Iterable[str] = (),
+    network_host_ip: str | None = None,
     module_initrd: str | Path | None = None,
     share_dir: str | Path | None = None,
     share_mode: str | ShareMode = ShareMode.INITRD,
@@ -213,6 +399,8 @@ def run_vm(
     autorun_path: str | Path | None = None,
     force_rebuild_initrd: bool = False,
 ) -> int:
+    hostfwd_values = tuple(hostfwd)
+    network_dns_values = tuple(network_dns)
     kernel_path = Path(kernel).expanduser().resolve()
     if not kernel_path.is_file():
         raise TestvmError(f"Kernel does not exist: {kernel_path}")
@@ -233,6 +421,17 @@ def run_vm(
 
     normalized_arch = (
         detect_kernel_arch(kernel_path) if arch is None else normalize_arch(arch)
+    )
+    _resolve_network_configuration(
+        arch=normalized_arch,
+        network=network,
+        network_tap=network_tap,
+        network_bridge=network_bridge,
+        hostfwd=hostfwd_values,
+        network_ip=network_ip,
+        network_gateway=network_gateway,
+        network_dns=network_dns_values,
+        network_host_ip=network_host_ip,
     )
 
     initrd_path: Path | None
@@ -284,6 +483,14 @@ def run_vm(
             append=append,
             nokaslr=nokaslr,
             qemu_arg=qemu_arg,
+            network=network,
+            network_tap=network_tap,
+            network_bridge=network_bridge,
+            hostfwd=hostfwd_values,
+            network_ip=network_ip,
+            network_gateway=network_gateway,
+            network_dns=network_dns_values,
+            network_host_ip=network_host_ip,
             share_image=share_image,
             autorun=resolved_autorun,
         )
